@@ -2336,52 +2336,21 @@ static char *handle_trace_call_path(cbm_mcp_server_t *srv, const char *args) {
 
     /* ── Symbol resolution: map short names to qualified_name ──── */
     if (!func_name && symbol && symbol[0]) {
-        /* Strategy: exact QN > exact name > QN contains */
         cbm_node_t qn_node = {0};
         if (cbm_store_find_node_by_qn(store, project, symbol, &qn_node) == CBM_STORE_OK) {
             /* Exact QN match — auto-resolve */
             func_name = heap_strdup(qn_node.qualified_name);
             free_node_contents(&qn_node);
         } else {
-            /* Collect candidates: name match + QN contains, dedup by QN */
-            int cap = 8;
+            /* Collect qualified_name candidates via QN contains.
+             * QN LIKE '%symbol%' naturally covers exact name matches
+             * AND partial QN matches in one query, ranked by exact
+             * QN first, then exact name, then contains. */
+            cbm_node_t *cands = NULL;
             int nc = 0;
-            cbm_node_t *cands = malloc(cap * sizeof(cbm_node_t));
-
-            /* Strategy 2: exact name match */
-            cbm_node_t *name_nodes = NULL;
-            int name_count = 0;
-            cbm_store_find_nodes_by_name(store, project, symbol, &name_nodes, &name_count);
-            for (int i = 0; i < name_count; i++) {
-                if (nc >= cap) { cap *= 2; cands = safe_realloc(cands, cap * sizeof(cbm_node_t)); }
-                memcpy(&cands[nc++], &name_nodes[i], sizeof(cbm_node_t));
-                memset(&name_nodes[i], 0, sizeof(cbm_node_t)); /* transfer ownership */
-            }
-            free(name_nodes);
-
-            /* Strategy 3: QN contains match */
-            cbm_node_t *like_nodes = NULL;
-            int like_count = 0;
-            cbm_store_find_nodes_by_qn_contains(store, project, symbol, &like_nodes, &like_count);
-            for (int i = 0; i < like_count; i++) {
-                /* Dedup: skip if QN already in cands from name match */
-                bool dup = false;
-                for (int j = 0; j < nc; j++) {
-                    if (cands[j].qualified_name &&
-                        strcmp(cands[j].qualified_name, like_nodes[i].qualified_name) == 0) {
-                        dup = true; break;
-                    }
-                }
-                if (!dup) {
-                    if (nc >= cap) { cap *= 2; cands = safe_realloc(cands, cap * sizeof(cbm_node_t)); }
-                    memcpy(&cands[nc++], &like_nodes[i], sizeof(cbm_node_t));
-                    memset(&like_nodes[i], 0, sizeof(cbm_node_t)); /* transfer ownership */
-                }
-            }
-            free(like_nodes);
+            cbm_store_find_nodes_by_qn_contains(store, project, symbol, &cands, &nc);
 
             if (nc == 1) {
-                /* Single candidate — auto-resolve */
                 func_name = heap_strdup(cands[0].qualified_name);
                 cbm_store_free_nodes(cands, nc);
             } else if (nc > 1) {
@@ -2405,14 +2374,14 @@ static char *handle_trace_call_path(cbm_mcp_server_t *srv, const char *args) {
                 yyjson_mut_obj_add_strcpy(doc, root, "hint", "Pass the qualified_name as function_name to trace.");
                 char *json = yy_doc_to_str(doc);
                 yyjson_mut_doc_free(doc);
-                free(symbol); free(project); free(direction); free(mode); free(param_name);
                 cbm_store_free_nodes(cands, nc);
+                free(symbol); free(project); free(direction); free(mode); free(param_name);
                 char *result = cbm_mcp_text_result(json, false);
                 free(json);
                 return result;
             }
             /* nc == 0: fall through to error handling below */
-            if (cands) { free(cands); }
+            if (cands) { cbm_store_free_nodes(cands, nc); }
         }
     }
 
