@@ -1,5 +1,5 @@
 /*
- * mcp.c — MCP server: JSON-RPC 2.0 over stdio with 14 graph tools.
+ * mcp.c — MCP server: JSON-RPC 2.0 over stdio with 22 graph tools.
  *
  * Uses yyjson for fast JSON parsing/building.
  * Single-threaded event loop: read line → parse → dispatch → respond.
@@ -446,6 +446,77 @@ static const tool_def_t TOOLS[] = {
      "{\"type\":\"object\",\"properties\":{\"traces\":{\"type\":\"array\",\"items\":{\"type\":"
      "\"object\"}},\"project\":{\"type\":"
      "\"string\"}},\"required\":[\"traces\",\"project\"]}"},
+
+    {"smart_analyze",
+     "Full auto-pipeline: architecture analysis + rule checking + incident creation + ADR update. "
+     "Runs get_architecture, check_architecture_rules, creates incidents for god objects "
+     "(fan_in>=100) and boundary violations (call_count>=50), then updates the Architecture "
+     "Decision Record. Deduplicates incidents across re-runs so repeated calls are safe.",
+     "{\"type\":\"object\",\"properties\":{\"project\":{\"type\":\"string\"}},\"required\":["
+     "\"project\"]}"},
+
+    {"analyze_architecture_reasoning",
+     "Deep 7-dimension architecture analysis: hotspots (top fan-in functions), boundary crossings "
+     "(coupling between packages), architectural drift warnings, layer assignments (api/core/entry/"
+     "internal), package statistics, cluster cohesion via Leiden community detection, and entry "
+     "points. Returns structured JSON with hotspots, boundary_crossings, architectural_drift, "
+     "layers, packages, and a knowledge_confidence score.",
+     "{\"type\":\"object\",\"properties\":{\"project\":{\"type\":\"string\"},\"target_module\":{"
+     "\"type\":\"string\",\"description\":\"Optional: scope analysis to a specific module/package\"},"
+     "\"max_complexity\":{\"type\":\"integer\",\"default\":10,\"description\":\"Max hotspot results\"},"
+     "\"max_coupling\":{\"type\":\"integer\",\"default\":10,\"description\":\"Max boundary crossing results\"},"
+     "\"max_drift_warnings\":{\"type\":\"integer\",\"default\":10,\"description\":\"Max drift warnings\"}},"
+     "\"required\":[\"project\"]}"},
+
+    {"check_architecture_rules",
+     "Verify architecture against configurable rules. Checks rules like no-high-fanin-god-objects "
+     "(fan_in > 100), no-cyclic-dependencies, layer-violations, and other architectural constraints. "
+     "Returns violation list with rule name, function qualified_name, fan_in, limit, and severity.",
+     "{\"type\":\"object\",\"properties\":{\"project\":{\"type\":\"string\"}},\"required\":["
+     "\"project\"]}"},
+
+    {"create_incident",
+     "Create an incident record for bugs, outages, architecture violations, or technical debt. "
+     "Incidents are persisted in SQLite and can be listed, searched, and used for tracking "
+     "resolution over time.",
+     "{\"type\":\"object\",\"properties\":{\"project\":{\"type\":\"string\"},\"title\":{\"type\":"
+     "\"string\",\"description\":\"Incident title (required)\"},\"description\":{\"type\":\"string\","
+     "\"description\":\"Detailed description\"},\"affected_functions\":{\"type\":\"string\","
+     "\"description\":\"JSON array of affected qualified_names\"},\"root_cause\":{\"type\":\"string\","
+     "\"description\":\"Root cause analysis\"},\"resolution\":{\"type\":\"string\","
+     "\"description\":\"How it was resolved\"},\"severity\":{\"type\":\"string\","
+     "\"enum\":[\"critical\",\"high\",\"medium\",\"low\",\"info\"],\"default\":\"medium\"}},"
+     "\"required\":[\"project\",\"title\"]}"},
+
+    {"list_incidents",
+     "List all incidents for a project, ordered by most recent first (max 50). "
+     "Returns incident id, title, severity, and occurred_at for each.",
+     "{\"type\":\"object\",\"properties\":{\"project\":{\"type\":\"string\"}},\"required\":["
+     "\"project\"]}"},
+
+    {"detect_schema_drift",
+     "Detect schema drift by comparing current node/edge counts against a stored baseline. "
+     "Creates a BASELINE incident via save_baseline first if none exists. Returns structural "
+     "drift percentage and severity (critical if >30% change, high if >10%).",
+     "{\"type\":\"object\",\"properties\":{\"project\":{\"type\":\"string\"}},\"required\":["
+     "\"project\"]}"},
+
+    {"save_baseline",
+     "Save a schema baseline snapshot (current node + edge counts) as a BASELINE incident. "
+     "Used by detect_schema_drift for comparison. Re-run to update the baseline after "
+     "major refactors.",
+     "{\"type\":\"object\",\"properties\":{\"project\":{\"type\":\"string\"}},\"required\":["
+     "\"project\"]}"},
+
+    {"detect_dead_code",
+     "Detect potentially dead code using static analysis (fan_in, fan_out, test coverage, "
+     "runtime traces) with a confidence score. Filters out known noise (public/, assets/, "
+     "vendor/, bundles, chunks, node_modules). Returns dead_code_candidates ranked by "
+     "confidence (0.80+ = likely dead, 0.60+ = possibly dead).",
+     "{\"type\":\"object\",\"properties\":{\"project\":{\"type\":\"string\"},\"limit\":{\"type\":"
+     "\"integer\",\"default\":10,\"description\":\"Max dead code candidates to return\"},"
+     "\"min_confidence\":{\"type\":\"number\",\"default\":0.5,\"description\":\"Minimum "
+     "confidence threshold (0.0-1.0)\"}},\"required\":[\"project\"]}"},
 };
 
 static const int TOOL_COUNT = sizeof(TOOLS) / sizeof(TOOLS[0]);

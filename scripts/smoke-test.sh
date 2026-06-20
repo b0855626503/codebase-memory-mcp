@@ -483,14 +483,14 @@ fi
 echo "OK: tools/list response received (id:2)"
 
 # 5c: Verify expected tools are present
-for TOOL in index_repository search_graph trace_path get_code_snippet search_code; do
+for TOOL in index_repository search_graph trace_path get_code_snippet search_code smart_analyze create_incident list_incidents detect_dead_code check_architecture_rules; do
   if ! grep -q "\"$TOOL\"" "$MCP_OUTPUT"; then
     echo "FAIL: tool '$TOOL' not found in tools/list response"
     rm -f "$MCP_INPUT" "$MCP_OUTPUT"
     exit 1
   fi
 done
-echo "OK: all 5 core MCP tools present in tools/list"
+echo "OK: all 10 core MCP tools present in tools/list"
 
 # 5d: Verify protocol version in initialize response
 if ! grep -q '"protocolVersion"' "$MCP_OUTPUT"; then

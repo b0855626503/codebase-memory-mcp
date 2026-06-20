@@ -302,7 +302,8 @@ static void print_help(void) {
     printf("  list_projects, delete_project, index_status, detect_changes,\n");
     printf("  manage_adr, ingest_traces, analyze_architecture_reasoning,\n");
     printf("  create_incident, list_incidents, check_architecture_rules,\n");
-    printf("  smart_analyze, analyze_and_create_adr\n");
+    printf("  smart_analyze, detect_schema_drift, save_baseline,\n");
+    printf("  detect_dead_code\n");
 }
 
 /* ── Main ───────────────────────────────────────────────────────── */
