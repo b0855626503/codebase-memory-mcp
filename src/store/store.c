@@ -3843,8 +3843,8 @@ static int arch_layers(cbm_store_t *s, const char *project, cbm_architecture_inf
     out->layers = (npkgs > 0) ? calloc(npkgs, sizeof(cbm_package_layer_t)) : NULL;
     int layer_out = 0;
     for (int i = 0; i < npkgs; i++) {
-        /* Skip garbage: URL-like, markdown fragments, special chars */
-        if (strstr(all_pkgs[i], "://") || strstr(all_pkgs[i], "www.") ||
+        /* Skip garbage: URL-like, markdown fragments, special chars, NULL */
+        if (!all_pkgs[i] || strstr(all_pkgs[i], "://") || strstr(all_pkgs[i], "www.") ||
             strstr(all_pkgs[i], ".com") || strstr(all_pkgs[i], ".io/") ||
             strstr(all_pkgs[i], ".org") || strstr(all_pkgs[i], ")") ||
             strstr(all_pkgs[i], " See ") || all_pkgs[i][0] == ' ') continue;
