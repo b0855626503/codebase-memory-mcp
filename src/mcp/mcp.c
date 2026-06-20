@@ -2353,6 +2353,7 @@ static char *handle_trace_call_path(cbm_mcp_server_t *srv, const char *args) {
             if (nc == 1) {
                 func_name = heap_strdup(cands[0].qualified_name);
                 cbm_store_free_nodes(cands, nc);
+                nc = 0; cands = NULL; /* prevent double-free in fallthrough */
             } else if (nc > 1) {
                 /* Multiple candidates — return candidate list */
                 yyjson_mut_doc *doc = yyjson_mut_doc_new(NULL);
