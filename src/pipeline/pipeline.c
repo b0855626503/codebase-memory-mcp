@@ -99,6 +99,11 @@ struct cbm_pipeline {
     cbm_incident_t *saved_incidents;
     int saved_incident_count;
     char saved_incident_project[CBM_SZ_256];
+
+    /* ADR (project_summaries) captured before a full-reindex DB delete,
+     * so it can be restored after the rebuild. NULL when no ADR existed.
+     * Preserves manually curated ADR content across reindex (#516). */
+    char *saved_adr;
 };
 
 /* ── Global pkgmap (one active pipeline at a time) ─────────────── */
@@ -189,6 +194,9 @@ void cbm_pipeline_free(cbm_pipeline_t *p) {
         cbm_store_incident_free(p->saved_incidents, p->saved_incident_count);
         p->saved_incidents = NULL;
     }
+    /* Free saved ADR if pipeline was cancelled before restore */
+    free(p->saved_adr);
+    p->saved_adr = NULL;
     /* Defensively free userconfig in case run() was never called or panicked */
     if (p->userconfig) {
         cbm_set_user_lang_config(NULL);
@@ -812,6 +820,16 @@ static int try_incremental_or_delete_db(cbm_pipeline_t *p, cbm_file_info_t *file
             snprintf(p->saved_incident_project, sizeof(p->saved_incident_project),
                      "%s", p->project_name);
         }
+        /* Capture ADR before DB deletion so it can be restored after
+         * the rebuild (project_summaries is otherwise lost). Issue #516. */
+        cbm_adr_t existing;
+        if (cbm_store_adr_get(check_store, p->project_name, &existing) == CBM_STORE_OK) {
+            if (existing.content) {
+                free(p->saved_adr);
+                p->saved_adr = strdup(existing.content);
+            }
+            cbm_store_adr_free(&existing);
+        }
     }
 
     cbm_log_info("pipeline.route", "path", "reindex", "action", "deleting old db");
@@ -1024,6 +1042,19 @@ static int run_post_extraction(cbm_pipeline_t *p, cbm_pipeline_ctx_t *ctx,
             p->saved_incidents = NULL;
             p->saved_incident_count = 0;
             p->saved_incident_project[0] = '\0';
+        }
+        /* ── Restore ADR saved before old DB was deleted ── */
+        if (rc == 0 && p->saved_adr) {
+            char adr_db_path[CBM_SZ_1K];
+            snprintf(adr_db_path, sizeof(adr_db_path), "%s/%s.db",
+                     cbm_resolve_cache_dir(), p->project_name);
+            cbm_store_t *adr_rst = cbm_store_open_path(adr_db_path);
+            if (adr_rst) {
+                cbm_store_adr_store(adr_rst, p->project_name, p->saved_adr);
+                cbm_store_close(adr_rst);
+            }
+            free(p->saved_adr);
+            p->saved_adr = NULL;
         }
     }
     return rc;
