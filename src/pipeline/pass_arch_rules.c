@@ -157,8 +157,8 @@ char *cbm_check_architecture_rules(cbm_store_t *store, const char *project) {
                     yyjson_mut_val *v = yyjson_mut_obj(doc);
                     yyjson_mut_obj_add_strcpy(doc, v, "rule", r->name);
                     yyjson_mut_obj_add_strcpy(doc, v, "type", r->type);
-                    yyjson_mut_obj_add_strcpy(doc, v, "function", arch.hotspots[i].name);
-                    yyjson_mut_obj_add_strcpy(doc, v, "qualified_name", arch.hotspots[i].qualified_name);
+                    yyjson_mut_obj_add_strcpy(doc, v, "function", arch.hotspots[i].qualified_name);
+                    yyjson_mut_obj_add_strcpy(doc, v, "name", arch.hotspots[i].name);
                     yyjson_mut_obj_add_int(doc, v, "fan_in", arch.hotspots[i].fan_in);
                     yyjson_mut_obj_add_int(doc, v, "limit", r->max_fan_in);
                     yyjson_mut_obj_add_strcpy(doc, v, "severity", r->severity);

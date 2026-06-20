@@ -4312,7 +4312,7 @@ static char *handle_smart_analyze(cbm_mcp_server_t *srv, const char *args) {
     for (int i = 0; i < arch.hotspot_count && i < 10; i++) {
         if (arch.hotspots[i].fan_in >= 100) {
             char t[256]; snprintf(t,sizeof(t),"God Object: %s (fan_in=%d)",
-                arch.hotspots[i].name?arch.hotspots[i].name:"?",arch.hotspots[i].fan_in);
+                arch.hotspots[i].qualified_name?arch.hotspots[i].qualified_name:"?",arch.hotspots[i].fan_in);
             /* Only create if this exact title hasn't been reported before */
             bool dup = false;
             for (int j = 0; j < existing_count; j++) {
