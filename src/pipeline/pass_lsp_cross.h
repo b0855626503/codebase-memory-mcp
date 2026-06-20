@@ -34,6 +34,7 @@
 #include "lsp/c_lsp.h"  /* cbm_c_build_cross_registry / cbm_run_c_lsp_cross_with_registry */
 #include "lsp/cs_lsp.h" /* cbm_cs_build_cross_registry / cbm_run_cs_lsp_cross_with_registry */
 #include "lsp/ts_lsp.h" /* cbm_ts_build_cross_registry / cbm_run_ts_lsp_cross_with_registry */
+#include "lsp/php_lsp.h" /* cbm_php_build_cross_registry / cbm_run_php_lsp_cross_with_registry */
 #include "pipeline/pipeline_internal.h"
 #include <stdbool.h>
 

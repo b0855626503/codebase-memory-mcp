@@ -104,6 +104,28 @@ void cbm_run_php_lsp_cross(
     TSTree *cached_tree,           /* NULL = parse internally */
     CBMResolvedCallArray *out);
 
+/* --- Tier 2 full: pre-built cross-LSP registry ---
+ *
+ * cbm_php_build_cross_registry builds a project-wide type registry ONCE
+ * from all PHP defs in the project. It registers stdlib + framework types,
+ * then all project defs (filtered to CBM_LANG_PHP), and finalizes.
+ * Caller supplies a lifetime arena (cross_lsp_arena in pipeline.c); the
+ * returned registry is shared READ-ONLY across all files during resolve.
+ *
+ * cbm_run_php_lsp_cross_with_registry is the per-file entrypoint that uses
+ * the pre-built registry instead of building a fresh one per file.
+ * Mirrors cbm_run_py_lsp_cross_with_registry / cbm_run_ts_lsp_cross_with_registry. */
+CBMTypeRegistry *cbm_php_build_cross_registry(CBMArena *arena, CBMLSPDef *defs, int def_count);
+
+void cbm_run_php_lsp_cross_with_registry(
+    CBMArena *arena,
+    const char *source, int source_len,
+    const char *module_qn,
+    CBMTypeRegistry *reg,
+    const char **import_names, const char **import_qns, int import_count,
+    TSTree *cached_tree,           /* NULL = parse internally */
+    CBMResolvedCallArray *out);
+
 /* --- Batch cross-file LSP --- */
 
 /* Per-file input for batch PHP LSP processing. */

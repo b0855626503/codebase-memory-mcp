@@ -93,6 +93,12 @@ struct cbm_pipeline {
 
     /* User-defined extension overrides (loaded once per run) */
     cbm_userconfig_t *userconfig;
+
+    /* Incident preservation across reindex: saved before old DB deletion,
+     * restored after new DB dump. Eliminates file-scope globals. */
+    cbm_incident_t *saved_incidents;
+    int saved_incident_count;
+    char saved_incident_project[CBM_SZ_256];
 };
 
 /* ── Global pkgmap (one active pipeline at a time) ─────────────── */
@@ -178,6 +184,11 @@ void cbm_pipeline_free(cbm_pipeline_t *p) {
     free(p->branch_qn);
     cbm_git_context_free(&p->git_ctx);
     /* gbuf, store, registry freed during/after run */
+    /* Free saved incidents if pipeline was cancelled before restore */
+    if (p->saved_incidents) {
+        cbm_store_incident_free(p->saved_incidents, p->saved_incident_count);
+        p->saved_incidents = NULL;
+    }
     /* Defensively free userconfig in case run() was never called or panicked */
     if (p->userconfig) {
         cbm_set_user_lang_config(NULL);
@@ -512,7 +523,6 @@ static void predump_cfg(cbm_pipeline_ctx_t *ctx) {
 static void predump_complexity(cbm_pipeline_ctx_t *ctx) {
     cbm_pipeline_pass_complexity(ctx);
 }
-
 static void run_predump_passes(cbm_pipeline_t *p, cbm_pipeline_ctx_t *ctx) {
     static const struct {
         predump_pass_fn fn;
@@ -705,8 +715,11 @@ static int run_parallel_pipeline(cbm_pipeline_t *p, cbm_pipeline_ctx_t *ctx,
     /* Tier 2 full: pre-build per-language cross-LSP registries.
      * Built ONCE here; shared READ-ONLY across all files of that language
      * during resolve. Per-file work is then: parse + AST walk + O(1) lookups
-     * — no registry build, no Phase 1b mutations. Languages added so far:
-     * Go, Python. Others (C/C++, TS/JS, PHP, C#) fall back to per-file. */
+     * — no registry build, no Phase 1b mutations.
+     * Languages: Go, Python, C/C++/CUDA, C#, TypeScript/JS/TSX, PHP.
+     *
+     * DO NOT REORDER: resolvers borrow pointers from these registries.
+     * All consumption must complete BEFORE cbm_arena_destroy below. */
     CBMArena cross_lsp_arena;
     cbm_arena_init(&cross_lsp_arena);
     CBMCrossLspRegistries cross_registries = {0};
@@ -717,6 +730,8 @@ static int run_parallel_pipeline(cbm_pipeline_t *p, cbm_pipeline_ctx_t *ctx,
         cross_registries.c = cbm_c_build_cross_registry(&cross_lsp_arena, all_defs, def_count);
         cross_registries.cs = cbm_cs_build_cross_registry(&cross_lsp_arena, all_defs, def_count);
         cross_registries.ts = cbm_ts_build_cross_registry(&cross_lsp_arena, all_defs, def_count);
+        cross_registries.php =
+            cbm_php_build_cross_registry(&cross_lsp_arena, all_defs, def_count);
     }
     cbm_log_info("pass.timing", "pass", "lsp_cross_prepare", "elapsed_ms",
                  itoa_buf((int)elapsed_ms(*t)));
@@ -728,7 +743,9 @@ static int run_parallel_pipeline(cbm_pipeline_t *p, cbm_pipeline_ctx_t *ctx,
                  itoa_buf((int)elapsed_ms(*t)));
     log_phase_mem("parallel_resolve");
     cbm_pxc_free_module_def_index(module_def_index);
-    cbm_arena_destroy(&cross_lsp_arena); /* releases all per-lang registries */
+    /* DO NOT REORDER: parallel_resolve borrowed pointers from these registries.
+     * Arena MUST outlive all consumption of resolved_calls (completed above). */
+    cbm_arena_destroy(&cross_lsp_arena);
     free(all_defs);
     if (def_modules) {
         for (int i = 0; i < file_count; i++) {
@@ -787,6 +804,16 @@ static int try_incremental_or_delete_db(cbm_pipeline_t *p, cbm_file_info_t *file
     } else if (check_store) {
         cbm_store_close(check_store);
     }
+    /* ── Preserve incidents across reindex ──────────────────────── */
+    if (check_store) {
+        cbm_store_incident_list(check_store, p->project_name,
+                                &p->saved_incidents, &p->saved_incident_count);
+        if (p->saved_incident_count > 0) {
+            snprintf(p->saved_incident_project, sizeof(p->saved_incident_project),
+                     "%s", p->project_name);
+        }
+    }
+
     cbm_log_info("pipeline.route", "path", "reindex", "action", "deleting old db");
     cbm_unlink(db_path);
     char wal[PL_WAL_BUF];
@@ -832,10 +859,23 @@ static int dump_and_persist_hashes(cbm_pipeline_t *p, const cbm_file_info_t *fil
         *last_slash = '\0';
         cbm_mkdir_p(db_dir, CBM_DIR_PERMS);
     }
-    int rc = cbm_gbuf_dump_to_sqlite(p->gbuf, db_path);
+    /* Write to temp file first, then atomically rename.
+     * Crash during fwrite → temp file is orphaned, old DB survives.
+     * Crash after rename → new DB is intact, old DB already replaced. */
+    char tmp_path[CBM_SZ_1K];
+    snprintf(tmp_path, sizeof(tmp_path), "%s.tmp", db_path);
+    cbm_unlink(tmp_path); /* remove stale temp from prior crash */
+
+    int rc = cbm_gbuf_dump_to_sqlite(p->gbuf, tmp_path);
     if (rc != 0) {
         cbm_log_error("pipeline.err", "phase", "dump");
+        cbm_unlink(tmp_path);
         return rc;
+    }
+    if (rename(tmp_path, db_path) != 0) {
+        cbm_log_error("pipeline.err", "phase", "atomic_rename", "from", tmp_path, "to", db_path);
+        cbm_unlink(tmp_path);
+        return CBM_NOT_FOUND;
     }
     cbm_log_info("pass.timing", "pass", "dump", "elapsed_ms", itoa_buf((int)elapsed_ms(*t)));
     cbm_store_t *hash_store = cbm_store_open_path(db_path);
@@ -957,6 +997,34 @@ static int run_post_extraction(cbm_pipeline_t *p, cbm_pipeline_ctx_t *ctx,
         CBM_PROF_START(t_dump);
         rc = dump_and_persist_hashes(p, files, file_count, &t);
         CBM_PROF_END("pipeline", "4_dump_and_persist", t_dump);
+
+        /* ── Restore incidents saved before old DB was deleted ── */
+        if (rc == 0 && p->saved_incident_count > 0 &&
+            strcmp(p->saved_incident_project, p->project_name) == 0) {
+            char db_path[CBM_SZ_1K];
+            snprintf(db_path, sizeof(db_path), "%s/%s.db",
+                     cbm_resolve_cache_dir(), p->project_name);
+            cbm_store_t *rst = cbm_store_open_path(db_path);
+            if (rst) {
+                for (int i = 0; i < p->saved_incident_count; i++) {
+                    cbm_incident_t *inc = &p->saved_incidents[i];
+                    if (inc->title) {
+                        cbm_store_incident_create(rst, p->project_name,
+                            inc->title,
+                            inc->description ? inc->description : "",
+                            inc->affected_functions ? inc->affected_functions : "",
+                            inc->root_cause ? inc->root_cause : "",
+                            inc->resolution ? inc->resolution : "",
+                            inc->severity ? inc->severity : "medium");
+                    }
+                }
+                cbm_store_close(rst);
+            }
+            cbm_store_incident_free(p->saved_incidents, p->saved_incident_count);
+            p->saved_incidents = NULL;
+            p->saved_incident_count = 0;
+            p->saved_incident_project[0] = '\0';
+        }
     }
     return rc;
 }
@@ -1078,6 +1146,46 @@ int cbm_pipeline_run(cbm_pipeline_t *p) {
                  itoa_buf(cbm_gbuf_edge_count(p->gbuf)), "elapsed_ms",
                  itoa_buf((int)elapsed_ms(t0)));
     CBM_PROF_END("pipeline", "TOTAL", t_pipeline_total);
+
+    /* ── Active Learning: post-index self-check ─────────────────
+     * Lightweight graph health analysis after indexing completes.
+     * Identifies gaps that could improve future indexing quality. */
+    {
+        int total_nodes = cbm_gbuf_node_count(p->gbuf);
+        int total_edges = cbm_gbuf_edge_count(p->gbuf);
+        /* Edge-to-node ratio: < 1.0 suggests under-connected graph */
+        double density = total_nodes > 0 ? (double)total_edges / total_nodes : 0;
+        /* Check for specific edge type coverage */
+        int call_edges = cbm_gbuf_edge_count_by_type(p->gbuf, "CALLS");
+        int test_edges = cbm_gbuf_edge_count_by_type(p->gbuf, "TESTS");
+        int http_edges = cbm_gbuf_edge_count_by_type(p->gbuf, "HTTP_CALLS");
+        int elo_edges = 0;
+        elo_edges += cbm_gbuf_edge_count_by_type(p->gbuf, "BELONGS_TO");
+        elo_edges += cbm_gbuf_edge_count_by_type(p->gbuf, "HAS_MANY");
+        elo_edges += cbm_gbuf_edge_count_by_type(p->gbuf, "HAS_ONE");
+
+        cbm_log_info("active_learning.health",
+                     "nodes", itoa_buf(total_nodes),
+                     "edges", itoa_buf(total_edges),
+                     "density", density > 1.0 ? "healthy" : "sparse",
+                     "call_edges", itoa_buf(call_edges),
+                     "test_edges", itoa_buf(test_edges),
+                     "http_edges", itoa_buf(http_edges));
+
+        /* Suggestions based on graph health */
+        if (test_edges == 0 && total_nodes > 100)
+            cbm_log_info("active_learning.suggest",
+                         "hint", "no test edges — consider running tests to enrich the graph");
+        if (density < 0.5 && total_nodes > 100)
+            cbm_log_info("active_learning.suggest",
+                         "hint", "sparse graph — consider full indexing mode for more edge types");
+        if (http_edges > 0 && call_edges > 0)
+            cbm_log_info("active_learning.suggest",
+                         "hint", "cross-service tracing available — use trace_path(mode=cross_service)");
+        if (elo_edges > 0)
+            cbm_log_info("active_learning.suggest",
+                         "hint", "Eloquent relationships mapped — query BELONGS_TO/HAS_MANY edges");
+    }
 
 cleanup:
     cbm_pkgmap_free(cbm_pipeline_get_pkgmap());

@@ -566,6 +566,43 @@ int cbm_adr_validate_content(const char *content, char *errbuf, int errbuf_size)
 int cbm_adr_validate_section_keys(const char **keys, int count, char *errbuf, int errbuf_size);
 void cbm_adr_sections_free(cbm_adr_sections_t *s);
 
+/* ── Incident Memory ───────────────────────────────────────────── */
+
+#define CBM_INCIDENT_TITLE_MAX 256
+#define CBM_INCIDENT_DESC_MAX 4096
+
+typedef struct {
+    int id;
+    const char *project;
+    const char *title;
+    const char *description;
+    const char *affected_functions;  /* JSON array of qualified_names */
+    const char *root_cause;
+    const char *resolution;
+    const char *severity;
+    const char *occurred_at;
+    const char *resolved_at;
+    const char *created_at;
+} cbm_incident_t;
+
+/* Store a new incident. Returns the incident ID (>0) or -1 on error. */
+int cbm_store_incident_create(cbm_store_t *s, const char *project, const char *title,
+                               const char *description, const char *affected_functions,
+                               const char *root_cause, const char *resolution,
+                               const char *severity);
+
+/* Search incidents by keyword (matches title + description + root_cause).
+ * Returns count of matches. Caller frees results with cbm_store_incident_free. */
+int cbm_store_incident_search(cbm_store_t *s, const char *project, const char *keyword,
+                               cbm_incident_t **out, int *out_count);
+
+/* Get all incidents for a project. */
+int cbm_store_incident_list(cbm_store_t *s, const char *project, cbm_incident_t **out,
+                             int *out_count);
+
+/* Free incident array. */
+void cbm_store_incident_free(cbm_incident_t *incidents, int count);
+
 /* ── Search helpers (exposed for testing) ───────────────────────── */
 
 /* Convert a glob pattern to SQL LIKE pattern. Caller must free result. */

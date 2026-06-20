@@ -255,6 +255,19 @@ static int init_schema(cbm_store_t *s) {
         "  source_hash TEXT NOT NULL,"
         "  created_at TEXT NOT NULL,"
         "  updated_at TEXT NOT NULL"
+        ");"
+        "CREATE TABLE IF NOT EXISTS incidents ("
+        "  id INTEGER PRIMARY KEY AUTOINCREMENT,"
+        "  project TEXT,"
+        "  title TEXT NOT NULL,"
+        "  description TEXT,"
+        "  affected_functions TEXT,"
+        "  root_cause TEXT,"
+        "  resolution TEXT,"
+        "  severity TEXT DEFAULT 'medium',"
+        "  occurred_at TEXT,"
+        "  resolved_at TEXT,"
+        "  created_at TEXT DEFAULT (datetime('now'))"
         ");";
 
     int rc = exec_sql(s, ddl);
@@ -3822,19 +3835,27 @@ static int arch_layers(cbm_store_t *s, const char *project, cbm_architecture_inf
         find_or_add_pkg(all_pkgs, &npkgs, ST_MAX_PKGS, entry_pkgs[i]);
     }
 
-    /* Classify each package */
+    /* Classify each package, filtering garbage names (URL fragments,
+     * comment text, path-like noise from non-code files). */
     out->layers = (npkgs > 0) ? calloc(npkgs, sizeof(cbm_package_layer_t)) : NULL;
-    out->layer_count = npkgs;
+    int layer_out = 0;
     for (int i = 0; i < npkgs; i++) {
+        /* Skip garbage: URL-like, markdown fragments, special chars */
+        if (strstr(all_pkgs[i], "://") || strstr(all_pkgs[i], "www.") ||
+            strstr(all_pkgs[i], ".com") || strstr(all_pkgs[i], ".io/") ||
+            strstr(all_pkgs[i], ".org") || strstr(all_pkgs[i], ")") ||
+            strstr(all_pkgs[i], " See ") || all_pkgs[i][0] == ' ') continue;
         bool has_route = pkg_in_list(all_pkgs[i], route_pkgs, nrpkgs);
         bool has_entry = pkg_in_list(all_pkgs[i], entry_pkgs, nepkgs);
         const char *layer;
         const char *reason;
         classify_layer(all_pkgs[i], fan_in[i], fan_out[i], has_route, has_entry, &layer, &reason);
-        out->layers[i].name = all_pkgs[i]; /* transfer ownership */
-        out->layers[i].layer = heap_strdup(layer);
-        out->layers[i].reason = heap_strdup(reason);
+        out->layers[layer_out].name = all_pkgs[i]; /* transfer ownership */
+        out->layers[layer_out].layer = heap_strdup(layer);
+        out->layers[layer_out].reason = heap_strdup(reason);
+        layer_out++;
     }
+    out->layer_count = layer_out;
 
     /* Sort layers by name */
     for (int i = SKIP_ONE; i < npkgs; i++) {
@@ -5855,4 +5876,131 @@ int cbm_store_vector_search(cbm_store_t *s, const char *project, const char **ke
     *out = results;
     *out_count = count;
     return CBM_STORE_OK;
+}
+
+/* ── Incident Memory (create, search, list) ────────────────────── */
+
+int cbm_store_incident_create(cbm_store_t *s, const char *project, const char *title,
+                               const char *description, const char *affected_functions,
+                               const char *root_cause, const char *resolution,
+                               const char *severity) {
+    if (!s || !project || !title) return CBM_NOT_FOUND;
+    sqlite3 *db = cbm_store_get_db(s);
+    if (!db) return CBM_NOT_FOUND;
+    sqlite3_stmt *stmt = NULL;
+    const char *sql =
+        "INSERT INTO incidents (project, title, description, affected_functions, "
+        "root_cause, resolution, severity, occurred_at) "
+        "VALUES (?, ?, ?, ?, ?, ?, ?, datetime('now'))";
+    if (sqlite3_prepare_v2(db, sql, -1, &stmt, NULL) != SQLITE_OK) {
+        store_set_error_sqlite(s, "incident_create");
+        return CBM_NOT_FOUND;
+    }
+    sqlite3_bind_text(stmt, 1, project, -1, BIND_TRANSIENT);
+    sqlite3_bind_text(stmt, 2, title, -1, BIND_TRANSIENT);
+    sqlite3_bind_text(stmt, 3, description, -1, BIND_TRANSIENT);
+    sqlite3_bind_text(stmt, 4, affected_functions, -1, BIND_TRANSIENT);
+    sqlite3_bind_text(stmt, 5, root_cause, -1, BIND_TRANSIENT);
+    sqlite3_bind_text(stmt, 6, resolution, -1, BIND_TRANSIENT);
+    sqlite3_bind_text(stmt, 7, severity, -1, BIND_TRANSIENT);
+    if (sqlite3_step(stmt) != SQLITE_DONE) {
+        store_set_error_sqlite(s, "incident_create");
+        sqlite3_finalize(stmt);
+        return CBM_NOT_FOUND;
+    }
+    int id = (int)sqlite3_last_insert_rowid(db);
+    sqlite3_finalize(stmt);
+    return id;
+}
+
+int cbm_store_incident_list(cbm_store_t *s, const char *project, cbm_incident_t **out,
+                             int *out_count) {
+    if (!s || !project || !out || !out_count) return CBM_STORE_ERR;
+    sqlite3 *db = cbm_store_get_db(s);
+    if (!db) return CBM_STORE_ERR;
+    *out = NULL; *out_count = 0;
+    sqlite3_stmt *stmt = NULL;
+    const char *sql =
+        "SELECT id, project, title, description, affected_functions, root_cause, "
+        "resolution, severity, occurred_at, resolved_at, created_at "
+        "FROM incidents WHERE project = ? ORDER BY id DESC LIMIT 100";
+    if (sqlite3_prepare_v2(db, sql, -1, &stmt, NULL) != SQLITE_OK) {
+        store_set_error_sqlite(s, "incident_list");
+        return CBM_STORE_ERR;
+    }
+    sqlite3_bind_text(stmt, 1, project, -1, BIND_TRANSIENT);
+    int cap = 16, count = 0;
+    cbm_incident_t *arr = calloc(cap, sizeof(cbm_incident_t));
+    if (!arr) { sqlite3_finalize(stmt); return CBM_STORE_ERR; }
+    while (sqlite3_step(stmt) == SQLITE_ROW) {
+        if (count >= cap) {
+            cap *= 2;
+            cbm_incident_t *g = realloc(arr, cap * sizeof(*g));
+            if (!g) break;
+            arr = g;
+        }
+        cbm_incident_t *inc = &arr[count++];
+        memset(inc, 0, sizeof(*inc));
+        inc->id = sqlite3_column_int(stmt, 0);
+        inc->project = heap_strdup((const char *)sqlite3_column_text(stmt, 1));
+        inc->title = heap_strdup((const char *)sqlite3_column_text(stmt, 2));
+        inc->description = heap_strdup((const char *)sqlite3_column_text(stmt, 3));
+        inc->affected_functions = heap_strdup((const char *)sqlite3_column_text(stmt, 4));
+        inc->root_cause = heap_strdup((const char *)sqlite3_column_text(stmt, 5));
+        inc->resolution = heap_strdup((const char *)sqlite3_column_text(stmt, 6));
+        inc->severity = heap_strdup((const char *)sqlite3_column_text(stmt, 7));
+        inc->occurred_at = heap_strdup((const char *)sqlite3_column_text(stmt, 8));
+        inc->resolved_at = heap_strdup((const char *)sqlite3_column_text(stmt, 9));
+        inc->created_at = heap_strdup((const char *)sqlite3_column_text(stmt, 10));
+    }
+    sqlite3_finalize(stmt);
+    *out = arr;
+    *out_count = count;
+    return CBM_STORE_OK;
+}
+
+int cbm_store_incident_search(cbm_store_t *s, const char *project, const char *keyword,
+                               cbm_incident_t **out, int *out_count) {
+    /* Simplification: list all and filter in-memory for keyword match.
+     * For production, use FTS5 on incidents table. */
+    int rc = cbm_store_incident_list(s, project, out, out_count);
+    if (rc != CBM_STORE_OK || !keyword || !keyword[0]) return rc;
+    /* Filter in-place */
+    int kept = 0;
+    for (int i = 0; i < *out_count; i++) {
+        cbm_incident_t *inc = &(*out)[i];
+        bool match = false;
+        if (inc->title && strstr(inc->title, keyword)) match = true;
+        else if (inc->description && strstr(inc->description, keyword)) match = true;
+        else if (inc->root_cause && strstr(inc->root_cause, keyword)) match = true;
+        if (match) {
+            if (kept != i) (*out)[kept] = (*out)[i];
+            kept++;
+        } else {
+            free((void *)inc->title); free((void *)inc->description);
+            free((void *)inc->affected_functions); free((void *)inc->root_cause);
+            free((void *)inc->resolution); free((void *)inc->severity);
+            free((void *)inc->occurred_at); free((void *)inc->resolved_at);
+            free((void *)inc->created_at);
+        }
+    }
+    *out_count = kept;
+    return CBM_STORE_OK;
+}
+
+void cbm_store_incident_free(cbm_incident_t *incidents, int count) {
+    if (!incidents) return;
+    for (int i = 0; i < count; i++) {
+        free((void *)incidents[i].project);
+        free((void *)incidents[i].title);
+        free((void *)incidents[i].description);
+        free((void *)incidents[i].affected_functions);
+        free((void *)incidents[i].root_cause);
+        free((void *)incidents[i].resolution);
+        free((void *)incidents[i].severity);
+        free((void *)incidents[i].occurred_at);
+        free((void *)incidents[i].resolved_at);
+        free((void *)incidents[i].created_at);
+    }
+    free(incidents);
 }

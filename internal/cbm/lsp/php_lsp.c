@@ -4273,6 +4273,119 @@ void cbm_run_php_lsp_cross(CBMArena *arena, const char *source, int source_len,
         ts_parser_delete(parser);
 }
 
+/* ── Tier 2 full: pre-built cross-LSP registry ─────────────────────
+ *
+ * cbm_php_build_cross_registry mirrors cbm_py_build_cross_registry /
+ * cbm_go_build_cross_registry. It builds a project-wide type registry
+ * ONCE per project (in pipeline.c's cross_lsp_arena), registers PHP
+ * stdlib + framework types, then all project PHP defs, and finalizes.
+ * The returned registry is shared READ-ONLY across all resolve workers
+ * — per-file work drops from O(N_defs) registry build to O(1) lookups.
+ *
+ * This is the fix for the "PHP falls through to the per-file build path"
+ * comment in pass_parallel.c — it provides the missing Tier 2 fast path
+ * that Go, Python, C/C++, C#, and TypeScript already have. */
+
+CBMTypeRegistry *cbm_php_build_cross_registry(CBMArena *arena, CBMLSPDef *defs, int def_count) {
+    if (!arena)
+        return NULL;
+    CBMTypeRegistry *reg = (CBMTypeRegistry *)cbm_arena_alloc(arena, sizeof(*reg));
+    if (!reg)
+        return NULL;
+    cbm_registry_init(reg, arena);
+    cbm_php_stdlib_register(reg, arena);
+
+    /* Filter to PHP defs only — all_defs[] is mixed-language. */
+    for (int i = 0; i < def_count; i++) {
+        CBMLSPDef *d = &defs[i];
+        if (d->lang != CBM_LANG_PHP)
+            continue;
+        /* Reuse the existing per-def registration logic (one def at a time).
+         * idx_arena = NULL: skip mid-build finalize — callers that register
+         * one def at a time would rebuild buckets per def (see py tier-2). */
+        php_register_lsp_defs(arena, NULL, reg, d, 1);
+    }
+
+    cbm_registry_finalize(reg);
+    return reg;
+}
+
+/* ── Per-file entrypoint with pre-built registry ───────────────────
+ *
+ * cbm_run_php_lsp_cross_with_registry mirrors
+ * cbm_run_py_lsp_cross_with_registry. It takes the project-wide
+ * pre-built registry (shared READ-ONLY across workers), parses the
+ * file once, walks the AST, and emits resolved calls — without any
+ * per-file registry build, stdlib registration, or def iteration.
+ *
+ * Class field collection (which mutates reg.types[].field_names) is
+ * skipped here because the registry is shared across threads. The
+ * per-file path (cbm_run_php_lsp_cross) still does full field
+ * collection on its private registry. */
+
+void cbm_run_php_lsp_cross_with_registry(
+    CBMArena *arena, const char *source, int source_len, const char *module_qn,
+    CBMTypeRegistry *reg, const char **import_names, const char **import_qns,
+    int import_count, TSTree *cached_tree, CBMResolvedCallArray *out) {
+    if (!arena || !source || source_len <= 0 || !out || !reg)
+        return;
+
+    TSParser *parser = NULL;
+    TSTree *tree = cached_tree;
+    bool owns_tree = false;
+    if (!tree) {
+        parser = ts_parser_new();
+        if (!parser)
+            return;
+        ts_parser_set_language(parser, tree_sitter_php_only());
+        tree = ts_parser_parse_string(parser, NULL, source, (uint32_t)source_len);
+        owns_tree = true;
+        if (!tree) {
+            ts_parser_delete(parser);
+            return;
+        }
+    }
+    TSNode root = ts_tree_root_node(tree);
+
+    PHPLSPContext ctx;
+    php_lsp_init(&ctx, arena, source, source_len, reg, module_qn, out);
+
+    /* Caller-supplied imports register first. process_file's own AST walk
+     * adds file-internal `use` declarations on top of these. */
+    for (int i = 0; i < import_count; i++) {
+        if (import_names && import_qns && import_names[i] && import_qns[i]) {
+            php_lsp_add_use(&ctx, import_names[i], import_qns[i], CBM_PHP_USE_CLASS);
+        }
+    }
+
+    /* Collect namespace + use declarations from the AST (not class fields —
+     * the registry is shared READ-ONLY across threads so we cannot mutate
+     * reg.types[].field_names). */
+    {
+        uint32_t pkn = 0;
+        TSNode *pkids = cbm_lsp_collect_children(ctx.arena, root, &pkn);
+        for (uint32_t i = 0; i < pkn; i++) {
+            TSNode c = pkids[i];
+            const char *k = ts_node_type(c);
+            if (strcmp(k, "namespace_definition") == 0) {
+                set_namespace_from_decl(&ctx, c);
+            } else if (strcmp(k, "namespace_use_declaration") == 0) {
+                collect_use_declaration(&ctx, c);
+            }
+        }
+        ctx.current_namespace_qn = "";
+        /* Reset to caller-supplied uses only — process_file re-adds AST uses. */
+        ctx.use_count = import_count;
+    }
+
+    php_lsp_process_file(&ctx, root);
+
+    if (owns_tree && tree)
+        ts_tree_delete(tree);
+    if (parser)
+        ts_parser_delete(parser);
+}
+
 void cbm_batch_php_lsp_cross(CBMArena *arena, CBMBatchPHPLSPFile *files, int file_count,
                              CBMResolvedCallArray *out) {
     if (!arena || !files || file_count <= 0 || !out)

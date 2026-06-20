@@ -402,6 +402,8 @@ typedef struct {
     char prefix[CBM_SZ_4K];
     cbm_gitignore_t *local_gi;       /* nested .gitignore for this subtree */
     char local_gi_prefix[CBM_SZ_4K]; /* rel_prefix when local_gi was loaded */
+    cbm_gitignore_t *git_exclude;    /* .git/info/exclude (fix #489) */
+    cbm_gitignore_t *cbmignore;      /* project .cbmignore */
 } walk_frame_t;
 #define WALK_STACK_CAP 512
 /* Build abs/rel paths and process one directory entry. */
@@ -543,12 +545,16 @@ int cbm_discover_ex(const char *repo_path, const cbm_discover_opts_t *opts, cbm_
 
     /* Load gitignore if .git directory exists */
     cbm_gitignore_t *gitignore = NULL;
+    cbm_gitignore_t *git_exclude = NULL; /* .git/info/exclude (fix #489) */
     char gi_path[CBM_SZ_4K];
     snprintf(gi_path, sizeof(gi_path), "%s/.git", repo_path);
     struct stat gi_stat;
     if (wide_stat(gi_path, &gi_stat) == 0 && S_ISDIR(gi_stat.st_mode)) {
         snprintf(gi_path, sizeof(gi_path), "%s/.gitignore", repo_path);
         gitignore = cbm_gitignore_load(gi_path);
+        /* Load .git/info/exclude patterns (issue #489) */
+        snprintf(gi_path, sizeof(gi_path), "%s/.git/info/exclude", repo_path);
+        git_exclude = cbm_gitignore_load(gi_path);
     }
 
     /* Load cbmignore if specified or exists at repo root */
@@ -564,8 +570,41 @@ int cbm_discover_ex(const char *repo_path, const cbm_discover_opts_t *opts, cbm_
     file_list_t fl = {0};
     walk_dir(repo_path, "", opts, gitignore, cbmignore, &fl);
 
+    /* Post-filter: apply .git/info/exclude patterns (fix #489).
+     * Done after the walk to avoid changing every walk function signature. */
+    if (git_exclude) {
+        file_list_t filtered = {0};
+        for (int i = 0; i < fl.count; i++) {
+            if (!cbm_gitignore_matches(git_exclude, fl.files[i].rel_path, false)) {
+                if (filtered.count >= filtered.capacity) {
+                    int nc = filtered.capacity ? filtered.capacity * 2 : CBM_SZ_64;
+                    cbm_file_info_t *g = realloc(filtered.files, nc * sizeof(*g));
+                    if (!g) break;
+                    filtered.files = g; filtered.capacity = nc;
+                }
+                filtered.files[filtered.count++] = fl.files[i];
+            }
+        }
+        /* Free only entries that were filtered OUT (not kept in filtered) */
+        for (int i = 0; i < fl.count; i++) {
+            bool kept = false;
+            for (int j = 0; j < filtered.count; j++) {
+                if (fl.files[i].path == filtered.files[j].path) { kept = true; break; }
+            }
+            if (!kept) {
+                free(fl.files[i].path);
+                free(fl.files[i].rel_path);
+            }
+        }
+        free(fl.files);
+        fl.files = filtered.files;
+        fl.count = filtered.count;
+        fl.capacity = filtered.capacity;
+    }
+
     /* Cleanup */
     cbm_gitignore_free(gitignore);
+    cbm_gitignore_free(git_exclude);
     cbm_gitignore_free(cbmignore);
 
     *out = fl.files;

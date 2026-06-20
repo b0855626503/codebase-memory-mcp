@@ -2265,8 +2265,19 @@ static void resolve_worker(int worker_id, void *ctx_ptr) {
                         used_prebuilt = true;
                         break;
                     }
-                    /* PHP falls through to the per-file build path below
-                     * until its overlay variant lands. */
+                    case CBM_LANG_PHP:
+                        /* Tier 2 full: project-wide pre-built registry. The
+                         * registry was built ONCE in pipeline.c with all
+                         * PHP stdlib + framework + project defs and finalized.
+                         * Per-file work is now: parse + AST walk + O(1) lookups
+                         * — no per-file registry build, no repeated stdlib
+                         * registration. Mirrors py/c/ts _with_registry paths. */
+                        cbm_run_php_lsp_cross_with_registry(
+                            &result->arena, result->source, result->source_len,
+                            def_module, prebuilt, imp_keys, imp_vals, imp_count,
+                            result->cached_tree, &result->resolved_calls);
+                        used_prebuilt = true;
+                        break;
                     default:
                         break;
                     }
