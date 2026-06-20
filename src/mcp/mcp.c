@@ -357,8 +357,13 @@ static const tool_def_t TOOLS[] = {
     {"trace_path",
      "Trace paths through the code graph. Modes: calls (callers/callees), data_flow (value "
      "propagation with args at each hop), cross_service (through HTTP/async Route nodes). "
-     "Use INSTEAD OF grep for callers, dependencies, impact analysis, or data flow tracing.",
-     "{\"type\":\"object\",\"properties\":{\"function_name\":{\"type\":\"string\"},\"project\":{"
+     "Use INSTEAD OF grep for callers. Accepts symbol (short name) or function_name (exact QN). "
+     "Symbol auto-resolves: exact QN > exact name > QN contains. Single match auto-traces.",
+     "{\"type\":\"object\",\"properties\":{\"function_name\":{\"type\":\"string\",\"description\":"
+     "\"Exact qualified_name to trace. Use search_graph first if unknown.\"},"
+     "\"symbol\":{\"type\":\"string\",\"description\":"
+     "\"Short name like 'deposit' or 'WalletService.deposit'. Auto-resolves via exact QN > exact name "
+     "> QN contains. Single match auto-traces; multiple matches returns candidate list.\"},\"project\":{"
      "\"type\":\"string\"},\"direction\":{\"type\":\"string\",\"enum\":[\"inbound\",\"outbound\","
      "\"both\"],\"default\":\"both\"},\"depth\":{\"type\":\"integer\",\"default\":3},\"mode\":{"
      "\"type\":\"string\",\"enum\":[\"calls\",\"data_flow\",\"cross_service\"],\"default\":"
@@ -371,7 +376,7 @@ static const tool_def_t TOOLS[] = {
      "\"},\"include_tests\":{\"type\":\"boolean\",\"default\":false,"
      "\"description\":\"Include test files in results. When false (default), test files are "
      "filtered out. When true, test nodes are included with is_test=true marker."
-     "\"}},\"required\":[\"function_name\",\"project\"]}"},
+     "\"}},\"required\":[\"project\"]}"},
 
     {"get_code_snippet",
      "Read source code for a function/class/symbol. IMPORTANT: First call search_graph to find the "
@@ -2319,6 +2324,7 @@ static yyjson_mut_val *bfs_to_json_array(yyjson_mut_doc *doc, cbm_traverse_resul
 
 static char *handle_trace_call_path(cbm_mcp_server_t *srv, const char *args) {
     char *func_name = cbm_mcp_get_string_arg(args, "function_name");
+    char *symbol = cbm_mcp_get_string_arg(args, "symbol");
     char *project = cbm_mcp_get_string_arg(args, "project");
     cbm_store_t *store = resolve_store(srv, project);
     char *direction = cbm_mcp_get_string_arg(args, "direction");
@@ -2328,17 +2334,101 @@ static char *handle_trace_call_path(cbm_mcp_server_t *srv, const char *args) {
     bool risk_labels = cbm_mcp_get_bool_arg(args, "risk_labels");
     bool include_tests = cbm_mcp_get_bool_arg(args, "include_tests");
 
+    /* ── Symbol resolution: map short names to qualified_name ──── */
+    if (!func_name && symbol && symbol[0]) {
+        /* Strategy: exact QN > exact name > QN contains */
+        cbm_node_t qn_node = {0};
+        if (cbm_store_find_node_by_qn(store, project, symbol, &qn_node) == CBM_STORE_OK) {
+            /* Exact QN match — auto-resolve */
+            func_name = heap_strdup(qn_node.qualified_name);
+            free_node_contents(&qn_node);
+        } else {
+            /* Collect candidates: name match + QN contains, dedup by QN */
+            int cap = 8;
+            int nc = 0;
+            cbm_node_t *cands = malloc(cap * sizeof(cbm_node_t));
+
+            /* Strategy 2: exact name match */
+            cbm_node_t *name_nodes = NULL;
+            int name_count = 0;
+            cbm_store_find_nodes_by_name(store, project, symbol, &name_nodes, &name_count);
+            for (int i = 0; i < name_count; i++) {
+                if (nc >= cap) { cap *= 2; cands = safe_realloc(cands, cap * sizeof(cbm_node_t)); }
+                memcpy(&cands[nc++], &name_nodes[i], sizeof(cbm_node_t));
+                memset(&name_nodes[i], 0, sizeof(cbm_node_t)); /* transfer ownership */
+            }
+            free(name_nodes);
+
+            /* Strategy 3: QN contains match */
+            cbm_node_t *like_nodes = NULL;
+            int like_count = 0;
+            cbm_store_find_nodes_by_qn_contains(store, project, symbol, &like_nodes, &like_count);
+            for (int i = 0; i < like_count; i++) {
+                /* Dedup: skip if QN already in cands from name match */
+                bool dup = false;
+                for (int j = 0; j < nc; j++) {
+                    if (cands[j].qualified_name &&
+                        strcmp(cands[j].qualified_name, like_nodes[i].qualified_name) == 0) {
+                        dup = true; break;
+                    }
+                }
+                if (!dup) {
+                    if (nc >= cap) { cap *= 2; cands = safe_realloc(cands, cap * sizeof(cbm_node_t)); }
+                    memcpy(&cands[nc++], &like_nodes[i], sizeof(cbm_node_t));
+                    memset(&like_nodes[i], 0, sizeof(cbm_node_t)); /* transfer ownership */
+                }
+            }
+            free(like_nodes);
+
+            if (nc == 1) {
+                /* Single candidate — auto-resolve */
+                func_name = heap_strdup(cands[0].qualified_name);
+                cbm_store_free_nodes(cands, nc);
+            } else if (nc > 1) {
+                /* Multiple candidates — return candidate list */
+                yyjson_mut_doc *doc = yyjson_mut_doc_new(NULL);
+                yyjson_mut_val *root = yyjson_mut_obj(doc);
+                yyjson_mut_doc_set_root(doc, root);
+                yyjson_mut_obj_add_strcpy(doc, root, "status", "multiple_candidates");
+                yyjson_mut_obj_add_strcpy(doc, root, "symbol", symbol);
+                yyjson_mut_obj_add_int(doc, root, "candidate_count", nc);
+                yyjson_mut_val *arr = yyjson_mut_arr(doc);
+                for (int i = 0; i < nc; i++) {
+                    yyjson_mut_val *c = yyjson_mut_obj(doc);
+                    yyjson_mut_obj_add_strcpy(doc, c, "name", cands[i].name ? cands[i].name : "");
+                    yyjson_mut_obj_add_strcpy(doc, c, "qualified_name", cands[i].qualified_name ? cands[i].qualified_name : "");
+                    yyjson_mut_obj_add_strcpy(doc, c, "label", cands[i].label ? cands[i].label : "");
+                    yyjson_mut_obj_add_strcpy(doc, c, "file_path", cands[i].file_path ? cands[i].file_path : "");
+                    yyjson_mut_arr_add_val(arr, c);
+                }
+                yyjson_mut_obj_add_val(doc, root, "candidates", arr);
+                yyjson_mut_obj_add_strcpy(doc, root, "hint", "Pass the qualified_name as function_name to trace.");
+                char *json = yy_doc_to_str(doc);
+                yyjson_mut_doc_free(doc);
+                free(symbol); free(project); free(direction); free(mode); free(param_name);
+                cbm_store_free_nodes(cands, nc);
+                char *result = cbm_mcp_text_result(json, false);
+                free(json);
+                return result;
+            }
+            /* nc == 0: fall through to error handling below */
+            if (cands) { free(cands); }
+        }
+    }
+
     if (!func_name) {
+        free(symbol);
         free(project);
         free(direction);
         free(mode);
         free(param_name);
-        return cbm_mcp_text_result("function_name is required", true);
+        return cbm_mcp_text_result("function_name or symbol is required", true);
     }
     if (!store) {
         char *_err = build_project_list_error("project not found or not indexed");
         char *_res = cbm_mcp_text_result(_err, true);
         free(_err);
+        free(symbol);
         free(func_name);
         free(project);
         free(direction);
@@ -2349,6 +2439,7 @@ static char *handle_trace_call_path(cbm_mcp_server_t *srv, const char *args) {
 
     char *not_indexed = verify_project_indexed(store, project);
     if (not_indexed) {
+        free(symbol);
         free(func_name);
         free(project);
         free(direction);
@@ -2392,6 +2483,7 @@ static char *handle_trace_call_path(cbm_mcp_server_t *srv, const char *args) {
                  "\"hint\":\"Use search_graph(name_pattern=\\\".*%s.*\\\") to find the exact "
                  "name, then pass it to trace_path.\"}",
                  func_name, func_name);
+        free(symbol);
         free(func_name);
         free(project);
         free(direction);
@@ -2452,6 +2544,7 @@ static char *handle_trace_call_path(cbm_mcp_server_t *srv, const char *args) {
     }
 
     cbm_store_free_nodes(nodes, node_count);
+    free(symbol);
     free(func_name);
     free(project);
     free(direction);

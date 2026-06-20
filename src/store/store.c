@@ -1792,6 +1792,55 @@ int cbm_store_find_nodes_by_qn_suffix(cbm_store_t *s, const char *project, const
     return CBM_STORE_OK;
 }
 
+int cbm_store_find_nodes_by_qn_contains(cbm_store_t *s, const char *project,
+                                         const char *pattern, cbm_node_t **out, int *count) {
+    *out = NULL;
+    *count = 0;
+    if (!s || !s->db || !pattern || !pattern[0]) {
+        return CBM_STORE_ERR;
+    }
+
+    char like_pattern[CBM_SZ_512];
+    snprintf(like_pattern, sizeof(like_pattern), "%%%s%%", pattern);
+
+    const char *sql =
+        "SELECT id, project, label, name, qualified_name, file_path, "
+        "start_line, end_line, properties FROM nodes "
+        "WHERE project = ?1 AND label IN ('Function', 'Method') "
+        "AND qualified_name LIKE ?2 "
+        "ORDER BY CASE WHEN qualified_name = ?3 THEN 0 "
+        "WHEN name = ?3 THEN 1 ELSE 2 END, qualified_name "
+        "LIMIT 20";
+
+    sqlite3_stmt *stmt = NULL;
+    int rc = sqlite3_prepare_v2(s->db, sql, CBM_NOT_FOUND, &stmt, NULL);
+    if (rc != SQLITE_OK) {
+        store_set_error_sqlite(s, "qn_contains prepare");
+        return CBM_STORE_ERR;
+    }
+
+    bind_text(stmt, SKIP_ONE, project);
+    bind_text(stmt, ST_COL_2, like_pattern);
+    bind_text(stmt, ST_COL_3, pattern);
+
+    int cap = ST_INIT_CAP_8;
+    int n = 0;
+    cbm_node_t *nodes = malloc(cap * sizeof(cbm_node_t));
+    while (sqlite3_step(stmt) == SQLITE_ROW) {
+        if (n >= cap) {
+            cap *= ST_GROWTH;
+            nodes = safe_realloc(nodes, cap * sizeof(cbm_node_t));
+        }
+        memset(&nodes[n], 0, sizeof(cbm_node_t));
+        scan_node(stmt, &nodes[n]);
+        n++;
+    }
+    sqlite3_finalize(stmt);
+    *out = nodes;
+    *count = n;
+    return CBM_STORE_OK;
+}
+
 /* ── NodeDegree ────────────────────────────────────────────────── */
 
 void cbm_store_node_degree(cbm_store_t *s, int64_t node_id, int *in_deg, int *out_deg) {

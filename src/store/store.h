@@ -70,6 +70,11 @@ int cbm_store_find_nodes_by_file_overlap(cbm_store_t *s, const char *project, co
 int cbm_store_find_nodes_by_qn_suffix(cbm_store_t *s, const char *project, const char *suffix,
                                       cbm_node_t **out, int *count);
 
+/* Find Function/Method nodes whose qualified_name contains the given pattern.
+ * Used by trace_path symbol resolution to map short names to qualified names. */
+int cbm_store_find_nodes_by_qn_contains(cbm_store_t *s, const char *project,
+                                        const char *pattern, cbm_node_t **out, int *count);
+
 /* Get CALLS degree of a node (inbound and outbound). */
 void cbm_store_node_degree(cbm_store_t *s, int64_t node_id, int *in_deg, int *out_deg);
 
