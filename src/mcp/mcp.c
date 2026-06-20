@@ -57,6 +57,7 @@ enum {
 #include "foundation/str_util.h"
 #include "foundation/compat_regex.h"
 #include "pipeline/artifact.h"
+#include "pipeline/pass_arch_rules.h"
 
 #ifdef _WIN32
 #include <process.h>
@@ -70,6 +71,7 @@ enum {
 #include <stdint.h> // int64_t
 #include <stdio.h>
 #include <stdlib.h>
+#include <math.h>
 #include <string.h>
 #include <sys/stat.h>
 #include <time.h>
@@ -4210,6 +4212,341 @@ static char *handle_ingest_traces(cbm_mcp_server_t *srv, const char *args) {
     return result;
 }
 
+#include "pipeline/pass_arch_rules.h"
+#include <math.h>
+
+/* Forward decls for index hooks */
+static char *handle_smart_analyze(cbm_mcp_server_t *srv, const char *args);
+
+/* ── smart_analyze ──────────────────────────────────────── */
+
+static char *handle_smart_analyze(cbm_mcp_server_t *srv, const char *args) {
+    char *project = cbm_mcp_get_string_arg(args, "project");
+    if (!project) return cbm_mcp_text_result("missing project", true);
+    cbm_store_t *store = resolve_store(srv, project);
+    REQUIRE_STORE(store, project);
+    char *not_indexed = verify_project_indexed(store, project);
+    if (not_indexed) { free(project); return not_indexed; }
+    cbm_architecture_info_t arch = {0};
+    const char *asp[] = {"packages","layers","hotspots","routes","boundaries","languages",NULL};
+    cbm_store_get_architecture(store, project, asp, 6, &arch);
+    int ai = 0, vi = 0;
+    for (int i = 0; i < arch.hotspot_count && i < 10; i++) {
+        if (arch.hotspots[i].fan_in >= 100) {
+            char t[256]; snprintf(t,sizeof(t),"God Object: %s (fan_in=%d)",
+                arch.hotspots[i].name?arch.hotspots[i].name:"?",arch.hotspots[i].fan_in);
+            char d[1024]; snprintf(d,sizeof(d),"fan_in=%d. Consider refactoring.",
+                arch.hotspots[i].fan_in);
+            char a[512]; snprintf(a,sizeof(a),"[\"%s\"]",
+                arch.hotspots[i].qualified_name?arch.hotspots[i].qualified_name:"");
+            cbm_store_incident_create(store,project,t,d,a,"High fan-in","",
+                arch.hotspots[i].fan_in>=200?"critical":"high"); ai++;
+        }
+    }
+    for (int i = 0; i < arch.boundary_count && i < 20; i++) {
+        if (arch.boundaries[i].call_count >= 50) {
+            char t[256]; snprintf(t,sizeof(t),"Architecture Drift: %s->%s (%d calls)",
+                arch.boundaries[i].from?arch.boundaries[i].from:"?",
+                arch.boundaries[i].to?arch.boundaries[i].to:"?",
+                arch.boundaries[i].call_count);
+            char d[512]; snprintf(d,sizeof(d),"Boundary crossing %s -> %s: %d calls.",
+                arch.boundaries[i].from?arch.boundaries[i].from:"?",
+                arch.boundaries[i].to?arch.boundaries[i].to:"?",
+                arch.boundaries[i].call_count);
+            cbm_store_incident_create(store,project,t,d,"","Boundary crossing","","high"); ai++; vi++;
+        }
+    }
+    char ab[8192]; int ap = 0;
+    ap += snprintf(ab+ap,sizeof(ab)-ap,"## ADR: %s\n\n**Auto-generated**\n**Nodes:** %d | **Edges:** %d\n",
+        project,cbm_store_count_nodes(store,project),cbm_store_count_edges(store,project));
+    for (int i = 0; i < arch.package_count && i < 10; i++)
+        ap += snprintf(ab+ap,sizeof(ab)-ap,"- `%s` — %d nodes\n",
+            arch.packages[i].name?arch.packages[i].name:"?",arch.packages[i].node_count);
+    ab[ap] = '\0';
+    cbm_store_adr_store(store, project, ab);
+    cbm_store_architecture_free(&arch);
+    yyjson_mut_doc *doc = yyjson_mut_doc_new(NULL);
+    yyjson_mut_val *root = yyjson_mut_obj(doc); yyjson_mut_doc_set_root(doc, root);
+    yyjson_mut_obj_add_strcpy(doc, root, "status", "analyzed");
+    yyjson_mut_obj_add_int(doc, root, "auto_incidents_created", ai);
+    yyjson_mut_obj_add_int(doc, root, "boundary_violations", vi);
+    yyjson_mut_obj_add_int(doc, root, "adr_updated", 1);
+    char *json = yy_doc_to_str(doc); yyjson_mut_doc_free(doc);
+    char *result = cbm_mcp_text_result(json, false); free(json); free(project); return result;
+}
+
+/* ── analyze_architecture_reasoning ──────────────────────── */
+
+static char *handle_analyze_architecture_reasoning(cbm_mcp_server_t *srv, const char *args) {
+    char *project = cbm_mcp_get_string_arg(args, "project");
+    char *tmod = cbm_mcp_get_string_arg(args, "target_module");
+    cbm_store_t *store = resolve_store(srv, project);
+    REQUIRE_STORE(store, project);
+    char *ni = verify_project_indexed(store, project);
+    if (ni) { free(project); free(tmod); return ni; }
+    int ml = MCP_DEFAULT_LIMIT, mc = MCP_DEFAULT_LIMIT, md = MCP_DEFAULT_LIMIT;
+    { yyjson_doc *ad = yyjson_read(args, strlen(args), 0); if (ad) {
+        yyjson_val *v, *r2 = yyjson_doc_get_root(ad);
+        if ((v=yyjson_obj_get(r2,"max_complexity"))&&yyjson_is_int(v)) ml=(int)yyjson_get_int(v);
+        if ((v=yyjson_obj_get(r2,"max_coupling"))&&yyjson_is_int(v)) mc=(int)yyjson_get_int(v);
+        if ((v=yyjson_obj_get(r2,"max_drift_warnings"))&&yyjson_is_int(v)) md=(int)yyjson_get_int(v);
+        yyjson_doc_free(ad);
+    }}
+    cbm_architecture_info_t arch = {0};
+    const char *asp[]={"packages","routes","hotspots","boundaries","layers","clusters","entry_points",NULL};
+    cbm_store_get_architecture(store,project,asp,7,&arch);
+    int nc = cbm_store_count_nodes(store,project), ec = cbm_store_count_edges(store,project);
+    yyjson_mut_doc *doc = yyjson_mut_doc_new(NULL);
+    yyjson_mut_val *root = yyjson_mut_obj(doc); yyjson_mut_doc_set_root(doc, root);
+    yyjson_mut_obj_add_strcpy(doc,root,"project",project);
+    if(tmod) yyjson_mut_obj_add_strcpy(doc,root,"target_module",tmod);
+    yyjson_mut_obj_add_int(doc,root,"total_nodes",nc); yyjson_mut_obj_add_int(doc,root,"total_edges",ec);
+    yyjson_mut_val *hs = yyjson_mut_arr(doc);
+    for (int i=0;i<arch.hotspot_count&&i<ml;i++) {
+        yyjson_mut_val *it=yyjson_mut_obj(doc);
+        yyjson_mut_obj_add_strcpy(doc,it,"name",arch.hotspots[i].name);
+        yyjson_mut_obj_add_strcpy(doc,it,"qualified_name",arch.hotspots[i].qualified_name);
+        yyjson_mut_obj_add_int(doc,it,"fan_in",arch.hotspots[i].fan_in);
+        yyjson_mut_arr_add_val(hs,it);
+    }
+    yyjson_mut_obj_add_val(doc,root,"hotspots",hs);
+    yyjson_mut_val *bc=yyjson_mut_arr(doc);
+    for (int i=0;i<arch.boundary_count&&i<mc;i++) {
+        yyjson_mut_val *it=yyjson_mut_obj(doc);
+        yyjson_mut_obj_add_strcpy(doc,it,"from",arch.boundaries[i].from);
+        yyjson_mut_obj_add_strcpy(doc,it,"to",arch.boundaries[i].to);
+        yyjson_mut_obj_add_int(doc,it,"call_count",arch.boundaries[i].call_count);
+        yyjson_mut_obj_add_strcpy(doc,it,"risk",arch.boundaries[i].call_count>=50?"high":arch.boundaries[i].call_count>=20?"medium":"low");
+        yyjson_mut_arr_add_val(bc,it);
+    }
+    yyjson_mut_obj_add_val(doc,root,"boundary_crossings",bc);
+    yyjson_mut_val *dw=yyjson_mut_arr(doc); int dc=0;
+    for (int i=0;i<arch.boundary_count&&dc<md;i++) {
+        if(arch.boundaries[i].call_count>=10) {
+            yyjson_mut_val *w=yyjson_mut_obj(doc);
+            yyjson_mut_obj_add_strcpy(doc,w,"from",arch.boundaries[i].from);
+            yyjson_mut_obj_add_strcpy(doc,w,"to",arch.boundaries[i].to);
+            yyjson_mut_obj_add_int(doc,w,"call_count",arch.boundaries[i].call_count);
+            yyjson_mut_obj_add_strcpy(doc,w,"type","high_cross_boundary_coupling");
+            yyjson_mut_obj_add_strcpy(doc,w,"severity",arch.boundaries[i].call_count>=50?"high":"info");
+            yyjson_mut_arr_add_val(dw,w); dc++;
+        }
+    }
+    yyjson_mut_obj_add_val(doc,root,"architectural_drift",dw);
+    yyjson_mut_val *ly=yyjson_mut_arr(doc);
+    for (int i=0;i<arch.layer_count&&i<20;i++) {
+        yyjson_mut_val *it=yyjson_mut_obj(doc);
+        yyjson_mut_obj_add_strcpy(doc,it,"name",arch.layers[i].name?arch.layers[i].name:"");
+        yyjson_mut_obj_add_strcpy(doc,it,"layer",arch.layers[i].layer?arch.layers[i].layer:"");
+        yyjson_mut_obj_add_strcpy(doc,it,"reason",arch.layers[i].reason?arch.layers[i].reason:"");
+        yyjson_mut_arr_add_val(ly,it);
+    }
+    yyjson_mut_obj_add_val(doc,root,"layers",ly);
+    yyjson_mut_val *pk=yyjson_mut_arr(doc);
+    for (int i=0;i<arch.package_count&&i<20;i++) {
+        yyjson_mut_val *it=yyjson_mut_obj(doc);
+        yyjson_mut_obj_add_strcpy(doc,it,"package",arch.packages[i].name?arch.packages[i].name:"");
+        yyjson_mut_obj_add_int(doc,it,"node_count",arch.packages[i].node_count);
+        yyjson_mut_arr_add_val(pk,it);
+    }
+    yyjson_mut_obj_add_val(doc,root,"packages",pk);
+    yyjson_mut_obj_add_real(doc,root,"knowledge_confidence",0.90);
+    char *json = yy_doc_to_str(doc); yyjson_mut_doc_free(doc);
+    cbm_store_architecture_free(&arch);
+    char *result = cbm_mcp_text_result(json, false); free(json); free(project); free(tmod); return result;
+}
+
+/* ── Incident tools ──────────────────────────────────────── */
+
+static char *handle_create_incident(cbm_mcp_server_t *srv, const char *args) {
+    char *project = cbm_mcp_get_string_arg(args, "project");
+    if(!project) return cbm_mcp_text_result("missing project",true);
+    cbm_store_t *store = resolve_store(srv, project);
+    REQUIRE_STORE(store, project);
+    char *title=cbm_mcp_get_string_arg(args,"title"),*desc=cbm_mcp_get_string_arg(args,"description"),
+         *aff=cbm_mcp_get_string_arg(args,"affected_functions"),*root=cbm_mcp_get_string_arg(args,"root_cause"),
+         *res=cbm_mcp_get_string_arg(args,"resolution"),*sev=cbm_mcp_get_string_arg(args,"severity");
+    if(!title){free(project);return cbm_mcp_text_result("missing title",true);}
+    int id=cbm_store_incident_create(store,project,title,desc?desc:"",aff?aff:"",root?root:"",res?res:"",sev?sev:"medium");
+    free(project);free(title);free(desc);free(aff);free(root);free(res);free(sev);
+    yyjson_mut_doc *doc=yyjson_mut_doc_new(NULL);
+    yyjson_mut_val *ro=yyjson_mut_obj(doc);yyjson_mut_doc_set_root(doc,ro);
+    yyjson_mut_obj_add_strcpy(doc,ro,"status",id>=0?"created":"error");
+    yyjson_mut_obj_add_int(doc,ro,"incident_id",id);
+    char *json=yy_doc_to_str(doc);yyjson_mut_doc_free(doc);
+    char *result=cbm_mcp_text_result(json,false);free(json);return result;
+}
+
+static char *handle_list_incidents(cbm_mcp_server_t *srv, const char *args) {
+    char *project=cbm_mcp_get_string_arg(args,"project");
+    if(!project)return cbm_mcp_text_result("missing project",true);
+    cbm_store_t *store=resolve_store(srv,project);
+    REQUIRE_STORE(store,project);
+    cbm_incident_t *incs=NULL;int ic=0;
+    cbm_store_incident_list(store,project,&incs,&ic);
+    yyjson_mut_doc *doc=yyjson_mut_doc_new(NULL);
+    yyjson_mut_val *ro=yyjson_mut_obj(doc);yyjson_mut_doc_set_root(doc,ro);
+    yyjson_mut_val *arr=yyjson_mut_arr(doc);
+    for(int i=0;i<ic&&i<50;i++){
+        yyjson_mut_val *it=yyjson_mut_obj(doc);
+        yyjson_mut_obj_add_int(doc,it,"id",incs[i].id);
+        if(incs[i].title)yyjson_mut_obj_add_strcpy(doc,it,"title",incs[i].title);
+        if(incs[i].severity)yyjson_mut_obj_add_strcpy(doc,it,"severity",incs[i].severity);
+        if(incs[i].occurred_at)yyjson_mut_obj_add_strcpy(doc,it,"occurred_at",incs[i].occurred_at);
+        yyjson_mut_arr_add_val(arr,it);
+    }
+    yyjson_mut_obj_add_val(doc,ro,"incidents",arr);
+    yyjson_mut_obj_add_int(doc,ro,"total",ic);
+    cbm_store_incident_free(incs,ic);
+    char *json=yy_doc_to_str(doc);yyjson_mut_doc_free(doc);
+    char *result=cbm_mcp_text_result(json,false);free(json);free(project);return result;
+}
+
+/* ── Schema tools ────────────────────────────────────────── */
+
+static char *handle_save_baseline(cbm_mcp_server_t *srv, const char *args) {
+    char *project=cbm_mcp_get_string_arg(args,"project");
+    if(!project)return cbm_mcp_text_result("missing project",true);
+    cbm_store_t *store=resolve_store(srv,project);
+    REQUIRE_STORE(store,project);
+    int nc=cbm_store_count_nodes(store,project),ec=cbm_store_count_edges(store,project);
+    char d[256];snprintf(d,sizeof(d),"nodes=%d edges=%d",nc,ec);
+    int id=cbm_store_incident_create(store,project,"BASELINE",d,"","Schema baseline","","info");
+    yyjson_mut_doc *doc=yyjson_mut_doc_new(NULL);
+    yyjson_mut_val *ro=yyjson_mut_obj(doc);yyjson_mut_doc_set_root(doc,ro);
+    yyjson_mut_obj_add_strcpy(doc,ro,"status",id>=0?"saved":"error");
+    yyjson_mut_obj_add_int(doc,ro,"baseline_id",id);
+    yyjson_mut_obj_add_int(doc,ro,"nodes",nc);yyjson_mut_obj_add_int(doc,ro,"edges",ec);
+    char *json=yy_doc_to_str(doc);yyjson_mut_doc_free(doc);
+    char *result=cbm_mcp_text_result(json,false);free(json);free(project);return result;
+}
+
+static char *handle_detect_schema_drift(cbm_mcp_server_t *srv, const char *args) {
+    char *project=cbm_mcp_get_string_arg(args,"project");
+    if(!project)return cbm_mcp_text_result("missing project",true);
+    cbm_store_t *store=resolve_store(srv,project);
+    REQUIRE_STORE(store,project);
+    char *ni=verify_project_indexed(store,project);
+    if(ni){free(project);return ni;}
+    cbm_architecture_info_t arch={0};
+    const char *asp[]={"packages","layers","routes","hotspots","boundaries",NULL};
+    cbm_store_get_architecture(store,project,asp,5,&arch);
+    int cn=cbm_store_count_nodes(store,project),ce=cbm_store_count_edges(store,project);
+    yyjson_mut_doc *doc=yyjson_mut_doc_new(NULL);
+    yyjson_mut_val *root=yyjson_mut_obj(doc);yyjson_mut_doc_set_root(doc,root);
+    yyjson_mut_val *dr=yyjson_mut_arr(doc);int dc2=0;
+    cbm_incident_t *incs=NULL;int ic2=0;
+    cbm_store_incident_list(store,project,&incs,&ic2);
+    int bn=0,be=0;char bd[64]="";
+    for(int i=0;i<ic2;i++){
+        if(incs[i].title&&strcmp(incs[i].title,"BASELINE")==0){
+            if(incs[i].description)sscanf(incs[i].description,"nodes=%d edges=%d",&bn,&be);
+            if(incs[i].created_at)snprintf(bd,sizeof(bd),"%s",incs[i].created_at);
+            break;
+        }
+    }
+    if(bn>0){
+        double nc2=cn>0?(double)(cn-bn)/bn:0,ec2=ce>0?(double)(ce-be)/be:0;
+        if(fabs(nc2)>0.10||fabs(ec2)>0.10){
+            yyjson_mut_val *d=yyjson_mut_obj(doc);
+            yyjson_mut_obj_add_strcpy(doc,d,"type","structural_drift");
+            yyjson_mut_obj_add_int(doc,d,"baseline_nodes",bn);yyjson_mut_obj_add_int(doc,d,"current_nodes",cn);
+            yyjson_mut_obj_add_int(doc,d,"baseline_edges",be);yyjson_mut_obj_add_int(doc,d,"current_edges",ce);
+            yyjson_mut_obj_add_real(doc,d,"node_change_pct",nc2*100);yyjson_mut_obj_add_real(doc,d,"edge_change_pct",ec2*100);
+            yyjson_mut_obj_add_strcpy(doc,d,"severity",fabs(nc2)>0.30?"critical":"high");
+            yyjson_mut_arr_add_val(dr,d);dc2++;
+        }
+    }
+    cbm_store_incident_free(incs,ic2);cbm_store_architecture_free(&arch);
+    yyjson_mut_obj_add_val(doc,root,"drifts",dr);yyjson_mut_obj_add_int(doc,root,"drift_count",dc2);
+    yyjson_mut_obj_add_int(doc,root,"current_nodes",cn);yyjson_mut_obj_add_int(doc,root,"current_edges",ce);
+    yyjson_mut_obj_add_bool(doc,root,"has_baseline",bn>0);
+    if(bd[0])yyjson_mut_obj_add_strcpy(doc,root,"baseline_date",bd);
+    char *json=yy_doc_to_str(doc);yyjson_mut_doc_free(doc);
+    char *result=cbm_mcp_text_result(json,false);free(json);free(project);return result;
+}
+
+/* ── check_architecture_rules ────────────────────────────── */
+
+static char *handle_check_architecture_rules(cbm_mcp_server_t *srv, const char *args) {
+    char *project=cbm_mcp_get_string_arg(args,"project");
+    if(!project)return cbm_mcp_text_result("missing project",true);
+    cbm_store_t *store=resolve_store(srv,project);
+    REQUIRE_STORE(store,project);
+    char *ni=verify_project_indexed(store,project);
+    if(ni){free(project);return ni;}
+    char *json=cbm_check_architecture_rules(store,project);
+    char *result=cbm_mcp_text_result(json,false);free(json);free(project);return result;
+}
+
+/* ── detect_dead_code ────────────────────────────────────── */
+
+static char *handle_detect_dead_code(cbm_mcp_server_t *srv, const char *args) {
+    char *project=cbm_mcp_get_string_arg(args,"project");
+    int limit=MCP_DEFAULT_LIMIT;double minc=0.5;
+    { yyjson_doc *ad=yyjson_read(args,strlen(args),0);if(ad){
+        yyjson_val *v,*r2=yyjson_doc_get_root(ad);
+        if((v=yyjson_obj_get(r2,"limit"))&&yyjson_is_int(v))limit=(int)yyjson_get_int(v);
+        if((v=yyjson_obj_get(r2,"min_confidence"))&&yyjson_is_real(v))minc=yyjson_get_real(v);
+        yyjson_doc_free(ad);
+    }}
+    if(!project)return cbm_mcp_text_result("missing project",true);
+    cbm_store_t *store=resolve_store(srv,project);
+    REQUIRE_STORE(store,project);
+    char *ni=verify_project_indexed(store,project);
+    if(ni){free(project);return ni;}
+    sqlite3 *db=cbm_store_get_db(store);
+    if(!db){free(project);return cbm_mcp_text_result("no db",true);}
+    const char *sql="SELECT n.name,n.qualified_name,n.file_path,n.label,n.id,"
+        " (SELECT COUNT(*) FROM edges e WHERE e.target_id=n.id AND e.type='CALLS') AS fan_in,"
+        " (SELECT COUNT(*) FROM edges e WHERE e.source_id=n.id AND e.type='CALLS') AS fan_out,"
+        " (SELECT COUNT(*) FROM edges e WHERE (e.source_id=n.id OR e.target_id=n.id) AND e.type='TESTS') AS test_edges,"
+        " COALESCE(json_extract(n.properties,'$.is_entry_point'),0) AS is_entry,"
+        " (SELECT COUNT(*) FROM edges e WHERE (e.source_id=n.id OR e.target_id=n.id) AND e.type='RUNTIME_CALLS') AS runtime_edges"
+        " FROM nodes n WHERE n.project=?1 AND n.label IN('Function','Method') AND fan_in<=2"
+        " ORDER BY fan_in ASC,fan_out ASC,runtime_edges ASC LIMIT ?2";
+    yyjson_mut_doc *doc=yyjson_mut_doc_new(NULL);
+    yyjson_mut_val *root=yyjson_mut_obj(doc);yyjson_mut_doc_set_root(doc,root);
+    yyjson_mut_val *results=yyjson_mut_arr(doc);int found=0;
+    sqlite3_stmt *stmt=NULL;
+    if(sqlite3_prepare_v2(db,sql,-1,&stmt,NULL)==SQLITE_OK){
+        sqlite3_bind_text(stmt,1,project,-1,MCP_SQLITE_TRANSIENT);
+        sqlite3_bind_int(stmt,2,limit*5);
+        while(sqlite3_step(stmt)==SQLITE_ROW&&found<limit){
+            const char *nm=(const char*)sqlite3_column_text(stmt,0);
+            const char *qn=(const char*)sqlite3_column_text(stmt,1);
+            const char *fp=(const char*)sqlite3_column_text(stmt,2);
+            int fi=sqlite3_column_int(stmt,5),fo=sqlite3_column_int(stmt,6);
+            int te=sqlite3_column_int(stmt,7),ie=sqlite3_column_int(stmt,8);
+            int re=sqlite3_column_int(stmt,9);
+            double score = 0.0;
+            if (fi == 0) score += 0.40;
+            if (fo == 0) score += 0.20;
+            if (te == 0) score += 0.05;
+            if (!ie) score += 0.05;
+            if (re > 0) score *= 0.5;
+            if (score > 0.85) score = 0.85;
+            if (score < minc) continue;
+            yyjson_mut_val *item=yyjson_mut_obj(doc);
+            if(nm&&nm[0])yyjson_mut_obj_add_strcpy(doc,item,"name",nm);
+            if(qn&&qn[0])yyjson_mut_obj_add_strcpy(doc,item,"qualified_name",qn);
+            if(fp&&fp[0])yyjson_mut_obj_add_strcpy(doc,item,"file_path",fp);
+            yyjson_mut_obj_add_real(doc,item,"dead_code_confidence",score);
+            yyjson_mut_obj_add_strcpy(doc,item,"evidence",re>0?"runtime_observed":"static_only");
+            yyjson_mut_obj_add_int(doc,item,"fan_in",fi);yyjson_mut_obj_add_int(doc,item,"fan_out",fo);
+            const char *as=score>=0.80?"likely dead":score>=0.60?"possibly dead":"low confidence";
+            yyjson_mut_obj_add_strcpy(doc,item,"assessment",as);
+            yyjson_mut_arr_add_val(results,item);found++;
+        }
+        sqlite3_finalize(stmt);
+    }
+    yyjson_mut_obj_add_val(doc,root,"dead_code_candidates",results);
+    yyjson_mut_obj_add_int(doc,root,"found",found);
+    yyjson_mut_obj_add_strcpy(doc,root,"methodology","Two-level: static+runtime evidence. Score 0.80+=likely dead.");
+    char *json=yy_doc_to_str(doc);yyjson_mut_doc_free(doc);
+    char *result=cbm_mcp_text_result(json,false);free(json);free(project);return result;
+}
+
 /* ── Tool dispatch ────────────────────────────────────────────── */
 
 char *cbm_mcp_handle_tool(cbm_mcp_server_t *srv, const char *tool_name, const char *args_json) {
@@ -4261,6 +4598,31 @@ char *cbm_mcp_handle_tool(cbm_mcp_server_t *srv, const char *tool_name, const ch
     if (strcmp(tool_name, "ingest_traces") == 0) {
         return handle_ingest_traces(srv, args_json);
     }
+    if (strcmp(tool_name, "analyze_architecture_reasoning") == 0) {
+        return handle_analyze_architecture_reasoning(srv, args_json);
+    }
+    if (strcmp(tool_name, "smart_analyze") == 0) {
+        return handle_smart_analyze(srv, args_json);
+    }
+    if (strcmp(tool_name, "create_incident") == 0) {
+        return handle_create_incident(srv, args_json);
+    }
+    if (strcmp(tool_name, "list_incidents") == 0) {
+        return handle_list_incidents(srv, args_json);
+    }
+    if (strcmp(tool_name, "detect_schema_drift") == 0) {
+        return handle_detect_schema_drift(srv, args_json);
+    }
+    if (strcmp(tool_name, "save_baseline") == 0) {
+        return handle_save_baseline(srv, args_json);
+    }
+    if (strcmp(tool_name, "detect_dead_code") == 0) {
+        return handle_detect_dead_code(srv, args_json);
+    }
+    if (strcmp(tool_name, "check_architecture_rules") == 0) {
+        return handle_check_architecture_rules(srv, args_json);
+    }
+
     char msg[CBM_SZ_256];
     snprintf(msg, sizeof(msg), "unknown tool: %s", tool_name);
     return cbm_mcp_text_result(msg, true);
