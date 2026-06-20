@@ -1811,7 +1811,8 @@ static void resolve_file_calls(resolve_ctx_t *rc, resolve_worker_state_t *ws, CB
             /* Constructor-injection resolution: $this->property->method().
              * Derive enclosing class QN from the function QN, then look up
              * the property's type via class Field definitions in the gbuf. */
-            if (call->receiver_expr && call->enclosing_func_qn) {
+            bool has_receiver = (call->receiver_expr != NULL);
+            if (has_receiver && call->enclosing_func_qn) {
                 const char *last_dot = strrchr(call->enclosing_func_qn, '.');
                 if (last_dot && last_dot != call->enclosing_func_qn) {
                     size_t class_len = (size_t)(last_dot - call->enclosing_func_qn);
@@ -1826,8 +1827,15 @@ static void resolve_file_calls(resolve_ctx_t *rc, resolve_worker_state_t *ws, CB
                 }
             }
             if (!res.qualified_name || res.qualified_name[0] == '\0') {
-                res = cbm_registry_resolve(rc->registry, call->callee_name, module_qn, imp_keys,
-                                           imp_vals, imp_count);
+                /* Member calls ($this->x(), $obj->y()) — the receiver was
+                 * stripped from callee_name at extraction. Name-only matching
+                 * cannot safely resolve them: $this->create() matched
+                 * FreeGameController.create → fan_in 2868.
+                 * Block registry fallback. False negative > false positive. */
+                if (!has_receiver) {
+                    res = cbm_registry_resolve(rc->registry, call->callee_name, module_qn, imp_keys,
+                                               imp_vals, imp_count);
+                }
             }
         }
         atomic_fetch_add_explicit(&rc->time_ns_rc_resolve, extract_now_ns() - _rc_t0,
@@ -1839,16 +1847,22 @@ static void resolve_file_calls(resolve_ctx_t *rc, resolve_worker_state_t *ws, CB
                                   memory_order_relaxed);
 
         if (!res.qualified_name || res.qualified_name[0] == '\0') {
-            /* Distinguish unresolved-receiver from other resolution failures */
-            const char *dot = strchr(call->callee_name, '.');
-            if (dot) {
-                char prefix[CBM_SZ_256];
-                size_t plen = (size_t)(dot - call->callee_name);
-                if (plen >= sizeof(prefix)) plen = sizeof(prefix) - 1;
-                memcpy(prefix, call->callee_name, plen);
-                prefix[plen] = '\0';
-                if (cbm_registry_is_unresolved_receiver_prefix(prefix)) {
-                    ws->calls_unresolved_receiver++;
+            /* Distinguish unresolved-receiver from other resolution failures.
+             * Priority 1: receiver_expr is set → member call ($this->x(),
+             * $obj->y()) where the receiver was stripped from callee_name. */
+            if (call->receiver_expr) {
+                ws->calls_unresolved_receiver++;
+            } else {
+                const char *dot = strchr(call->callee_name, '.');
+                if (dot) {
+                    char prefix[CBM_SZ_256];
+                    size_t plen = (size_t)(dot - call->callee_name);
+                    if (plen >= sizeof(prefix)) plen = sizeof(prefix) - 1;
+                    memcpy(prefix, call->callee_name, plen);
+                    prefix[plen] = '\0';
+                    if (cbm_registry_is_unresolved_receiver_prefix(prefix)) {
+                        ws->calls_unresolved_receiver++;
+                    }
                 }
             }
             if (cbm_service_pattern_route_method(call->callee_name) != NULL) {

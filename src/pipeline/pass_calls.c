@@ -385,6 +385,12 @@ static int resolve_single_call(cbm_pipeline_ctx_t *ctx, CBMCall *call,
                 }
             }
         }
+        /* Member call ($this->x(), $obj->y()) with receiver — the receiver was
+         * stripped from callee_name at extraction time, so the registry only sees
+         * a bare method name. Name-only matching cannot safely resolve member
+         * calls: $this->create() matched FreeGameController.create → fan_in 2868.
+         * Block the registry fallback. False negative > false positive. */
+        return 0;
     }
 
     cbm_resolution_t res = cbm_registry_resolve(ctx->registry, call->callee_name, module_qn,
@@ -471,8 +477,15 @@ int cbm_pipeline_pass_calls(cbm_pipeline_ctx_t *ctx, const cbm_file_info_t *file
                 resolved++;
             } else {
                 /* Distinguish unresolved-receiver from other unresolved.
-                 * Extract the receiver prefix (text before the first '.' or '::')
-                 * and check if it looks like an unresolved object expression. */
+                 * Priority 1: receiver_expr is set → member call ($this->x(),
+                 * $obj->y()) where the receiver was stripped from callee_name
+                 * at extraction time. */
+                if (call->receiver_expr) {
+                    unresolved_receiver++;
+                } else {
+                /* Priority 2: Extract the receiver prefix (text before the
+                 * first '.' or '::') and check if it looks like an unresolved
+                 * object expression. */
                 const char *dot = strchr(call->callee_name, '.');
                 const char *colons = strstr(call->callee_name, "::");
                 const char *sep = dot;
@@ -492,6 +505,7 @@ int cbm_pipeline_pass_calls(cbm_pipeline_ctx_t *ctx, const cbm_file_info_t *file
                     }
                 } else {
                     unresolved_other++;
+                }
                 }
             }
         }
