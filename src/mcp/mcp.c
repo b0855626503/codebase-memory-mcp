@@ -1617,6 +1617,23 @@ static char *handle_search_graph(cbm_mcp_server_t *srv, const char *args) {
     int min_degree = cbm_mcp_get_int_arg(args, "min_degree", CBM_NOT_FOUND);
     int max_degree = cbm_mcp_get_int_arg(args, "max_degree", CBM_NOT_FOUND);
 
+    /* When semantic_query is used without explicit label/pattern filters,
+     * default the regex/BM25 results to the same domain as vector search
+     * (Function/Method/Class) so that Variable/Decorator nodes don't
+     * pollute the combined output. */
+    if (!label && !name_pattern && !qn_pattern && !file_pattern) {
+        bool has_semantic = false;
+        yyjson_doc *chk_doc = yyjson_read(args, strlen(args), 0);
+        if (chk_doc) {
+            yyjson_val *sq = yyjson_obj_get(yyjson_doc_get_root(chk_doc), "semantic_query");
+            has_semantic = sq && yyjson_is_arr(sq) && yyjson_arr_size(sq) > 0;
+            yyjson_doc_free(chk_doc);
+        }
+        if (has_semantic) {
+            label = heap_strdup("Function,Method,Class");
+        }
+    }
+
     if (relationship && !validate_edge_type(relationship)) {
         free(project);
         free(label);
