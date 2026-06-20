@@ -979,7 +979,6 @@ cbm_resolution_t cbm_registry_resolve_member_call(const cbm_registry_t *r, const
     memcpy(target_qn, class_qn, clen);
     target_qn[clen] = '.';
     memcpy(target_qn + clen + SKIP_ONE, method_name, mlen + 1); /* +1 for NUL */
-
     /* Step 6: Verify target exists in registry, walking INHERITS chain.
      * Laravel repositories commonly extend a base class (e.g.
      * BankRepository extends Repository). Methods like findOneWhere(),
@@ -1013,7 +1012,6 @@ cbm_resolution_t cbm_registry_resolve_member_call(const cbm_registry_t *r, const
     if (!target_label) {
         return empty_result();
     }
-
     cbm_resolution_t res = {.qualified_name = resolved_qn,
                             .strategy = "class_field_type",
                             .confidence = 0.90,

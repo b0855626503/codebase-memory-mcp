@@ -1820,9 +1820,14 @@ static void resolve_file_calls(resolve_ctx_t *rc, resolve_worker_state_t *ws, CB
                         char class_qn[CBM_SZ_256];
                         memcpy(class_qn, call->enclosing_func_qn, class_len);
                         class_qn[class_len] = '\0';
+                        const char *method_only2 = call->callee_name;
+                        const char *ld2 = strrchr(method_only2, '.');
+                        if (ld2) method_only2 = ld2 + 1;
+                        const char *la2 = strrchr(method_only2, '>');
+                        if (la2) method_only2 = la2 + 1;
                         res = cbm_registry_resolve_member_call(
                             rc->registry, rc->main_gbuf, call->receiver_expr,
-                            call->callee_name, class_qn);
+                            method_only2, class_qn);
                     }
                 }
             }

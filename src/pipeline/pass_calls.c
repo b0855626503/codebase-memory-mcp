@@ -372,8 +372,15 @@ static int resolve_single_call(cbm_pipeline_ctx_t *ctx, CBMCall *call,
                 char class_qn[CBM_SZ_256];
                 memcpy(class_qn, call->enclosing_func_qn, class_len);
                 class_qn[class_len] = '\0';
+                /* Pass just the method name (last segment after '.' or '->'), not
+                 * the full callee_name which may include receiver expression. */
+                const char *method_only = call->callee_name;
+                const char *last_dot2 = strrchr(method_only, '.');
+                if (last_dot2) method_only = last_dot2 + 1;
+                const char *last_arrow = strrchr(method_only, '>');
+                if (last_arrow) method_only = last_arrow + 1;
                 cbm_resolution_t member_res = cbm_registry_resolve_member_call(
-                    ctx->registry, ctx->gbuf, call->receiver_expr, call->callee_name, class_qn);
+                    ctx->registry, ctx->gbuf, call->receiver_expr, method_only, class_qn);
                 if (member_res.qualified_name && member_res.qualified_name[0]) {
                     const cbm_gbuf_node_t *mtgt =
                         cbm_gbuf_find_by_qn(ctx->gbuf, member_res.qualified_name);
