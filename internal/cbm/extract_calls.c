@@ -761,6 +761,12 @@ static void walk_calls(CBMExtractCtx *ctx, TSNode root, const CBMLangSpec *spec)
                 if (!ts_node_is_null(obj)) {
                     call.receiver_expr = cbm_node_text(ctx->arena, obj, ctx->source);
                 }
+                if (!call.receiver_expr) {
+                    TSNode scope = ts_node_child_by_field_name(node, TS_FIELD("scope"));
+                    if (!ts_node_is_null(scope)) {
+                        call.receiver_expr = cbm_node_text(ctx->arena, scope, ctx->source);
+                    }
+                }
 
                 TSNode args = ts_node_child_by_field_name(node, TS_FIELD("arguments"));
                 if (!ts_node_is_null(args)) {
@@ -1145,6 +1151,15 @@ void handle_calls(CBMExtractCtx *ctx, TSNode node, const CBMLangSpec *spec, Walk
             TSNode obj = ts_node_child_by_field_name(node, TS_FIELD("object"));
             if (!ts_node_is_null(obj)) {
                 call.receiver_expr = cbm_node_text(ctx->arena, obj, ctx->source);
+            }
+            /* Also capture scope for static calls (ClassName::method()).
+             * Without this, GameLogProxy::create() → callee_name="create" → matches
+             * every method named "create" in the codebase (fan_in 2,844 false). */
+            if (!call.receiver_expr) {
+                TSNode scope = ts_node_child_by_field_name(node, TS_FIELD("scope"));
+                if (!ts_node_is_null(scope)) {
+                    call.receiver_expr = cbm_node_text(ctx->arena, scope, ctx->source);
+                }
             }
 
             TSNode args = ts_node_child_by_field_name(node, TS_FIELD("arguments"));
