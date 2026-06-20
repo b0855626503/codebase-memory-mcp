@@ -307,7 +307,8 @@ static int create_user_indexes(cbm_store_t *s) {
         "CREATE INDEX IF NOT EXISTS idx_edges_type ON edges(project, type);"
         "CREATE INDEX IF NOT EXISTS idx_edges_target_type ON edges(project, target_id, type);"
         "CREATE INDEX IF NOT EXISTS idx_edges_source_type ON edges(project, source_id, type);"
-        "CREATE INDEX IF NOT EXISTS idx_edges_url_path ON edges(project, url_path_gen);";
+        "CREATE INDEX IF NOT EXISTS idx_edges_url_path ON edges(project, url_path_gen);"
+        "CREATE INDEX IF NOT EXISTS idx_incidents_project ON incidents(project, id);";
     /* NOTE: a partial expression index on json_extract(properties,'$.is_entry_point')
      * was tried for arch_entry_points and REVERTED: json_extract in an index WHERE
      * aborts CREATE INDEX (and thus store open) on any row whose properties JSON is
@@ -318,7 +319,9 @@ static int create_user_indexes(cbm_store_t *s) {
 }
 
 int64_t cbm_store_resolve_mmap_size(void) {
-    enum { MMAP_DEFAULT = 67108864, BASE_10 = 10 }; /* default 64 MB; decimal radix */
+    /* Default to 256 MB (was 64 MB). Scale up for large DBs.
+     * Overridable via CBM_SQLITE_MMAP_SIZE env var. */
+    enum { MMAP_DEFAULT = 268435456, BASE_10 = 10 };
     char buf[ST_BUF_64];
     if (cbm_safe_getenv("CBM_SQLITE_MMAP_SIZE", buf, sizeof(buf), NULL) == NULL) {
         return (int64_t)MMAP_DEFAULT;

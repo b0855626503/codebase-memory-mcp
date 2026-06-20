@@ -46,7 +46,9 @@ enum { PP_CSHARP_M_PREFIX_LEN = 2 };
  * exhausted — cross-file LSP becomes a no-op for those late files,
  * defs/calls already extracted are unaffected). */
 #define PP_RETAIN_PER_FILE_MAX_BYTES (100LL * 1024 * 1024)
-#define PP_RETAIN_TOTAL_BUDGET_BYTES (2LL * 1024 * 1024 * 1024)
+#define PP_RETAIN_BUDGET_MIN (2LL * 1024 * 1024 * 1024)
+#define PP_RETAIN_BUDGET_MAX (8LL * 1024 * 1024 * 1024)
+
 #include "pipeline/pipeline.h"
 #include "pipeline/pipeline_internal.h"
 #include "pipeline/pass_lsp_cross.h" /* cbm_pxc_* helpers for fused cross-file LSP */
@@ -62,6 +64,16 @@ enum { PP_CSHARP_M_PREFIX_LEN = 2 };
 #include "foundation/log.h"
 #include "foundation/slab_alloc.h"
 #include "foundation/mem.h"
+
+/* Compute source retention budget: 25% of RAM, clamped [2GB, 8GB].
+ * Moved here because int64_t/size_t require stdint.h which is included above. */
+static inline int64_t pp_retain_budget(void) {
+    size_t budget = cbm_mem_budget();
+    size_t retain = budget > 0 ? (budget / 4) : (size_t)PP_RETAIN_BUDGET_MIN;
+    if (retain < (size_t)PP_RETAIN_BUDGET_MIN) retain = (size_t)PP_RETAIN_BUDGET_MIN;
+    if (retain > (size_t)PP_RETAIN_BUDGET_MAX) retain = (size_t)PP_RETAIN_BUDGET_MAX;
+    return (int64_t)retain;
+}
 #include "foundation/str_util.h"
 #include "foundation/profile.h"
 #include "foundation/compat_regex.h"
@@ -622,13 +634,13 @@ static void extract_worker(int worker_id, void *ctx_ptr) {
         /* Retain source bytes in result->arena so the fused cross-file
          * LSP step in resolve_worker can run without re-reading from
          * disk. Capped per-file (PP_RETAIN_PER_FILE_MAX_BYTES) and
-         * globally (PP_RETAIN_TOTAL_BUDGET_BYTES) to bound peak RSS.
+         * globally (pp_retain_budget()) to bound peak RSS.
          * Skipping retention just means cross-file LSP no-ops for this
          * file — defs/calls already extracted are unaffected. */
         if (source_len > 0 && (int64_t)source_len <= PP_RETAIN_PER_FILE_MAX_BYTES) {
             int64_t prior = atomic_fetch_add_explicit(&ec->retained_bytes, (int64_t)source_len,
                                                       memory_order_relaxed);
-            if (prior + (int64_t)source_len <= PP_RETAIN_TOTAL_BUDGET_BYTES) {
+            if (prior + (int64_t)source_len <= pp_retain_budget()) {
                 char *copy = (char *)cbm_arena_alloc(&result->arena, (size_t)source_len + 1);
                 if (copy) {
                     memcpy(copy, source, (size_t)source_len);
