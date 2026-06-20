@@ -992,7 +992,11 @@ typedef struct __attribute__((aligned(CBM_CACHE_LINE))) {
      * registry's textual matcher. Surfaced in the parallel.resolve.done
      * log line so divergence between pipelines becomes observable. */
     int lsp_overrides;
-    char _pad[CBM_CACHE_LINE - sizeof(cbm_gbuf_t *) - ((PP_RING + 1) * sizeof(int))];
+    /* Calls whose receiver type could not be resolved (e.g. $this->repo->method()
+     * where $repo is injected via constructor DI). Blocked by the registry's
+     * unresolved-receiver guard — no CALLS edge emitted. */
+    int calls_unresolved_receiver;
+    char _pad[CBM_CACHE_LINE - sizeof(cbm_gbuf_t *) - ((PP_RING + 2) * sizeof(int))];
 } resolve_worker_state_t;
 
 typedef struct {
@@ -1816,6 +1820,18 @@ static void resolve_file_calls(resolve_ctx_t *rc, resolve_worker_state_t *ws, CB
                                   memory_order_relaxed);
 
         if (!res.qualified_name || res.qualified_name[0] == '\0') {
+            /* Distinguish unresolved-receiver from other resolution failures */
+            const char *dot = strchr(call->callee_name, '.');
+            if (dot) {
+                char prefix[CBM_SZ_256];
+                size_t plen = (size_t)(dot - call->callee_name);
+                if (plen >= sizeof(prefix)) plen = sizeof(prefix) - 1;
+                memcpy(prefix, call->callee_name, plen);
+                prefix[plen] = '\0';
+                if (cbm_registry_is_unresolved_receiver_prefix(prefix)) {
+                    ws->calls_unresolved_receiver++;
+                }
+            }
             if (cbm_service_pattern_route_method(call->callee_name) != NULL) {
                 cbm_resolution_t fake_res = {.qualified_name = call->callee_name,
                                              .confidence = PP_HALF_CONF,
@@ -2448,6 +2464,7 @@ int cbm_parallel_resolve(cbm_pipeline_ctx_t *ctx, const cbm_file_info_t *files, 
     int total_usages = 0;
     int total_semantic = 0;
     int total_lsp_overrides = 0;
+    int total_unresolved_receiver = 0;
     for (int i = 0; i < worker_count; i++) {
         if (workers[i].local_edge_buf) {
             cbm_gbuf_merge(ctx->gbuf, workers[i].local_edge_buf);
@@ -2455,6 +2472,7 @@ int cbm_parallel_resolve(cbm_pipeline_ctx_t *ctx, const cbm_file_info_t *files, 
             total_usages += workers[i].usages_resolved;
             total_semantic += workers[i].semantic_resolved;
             total_lsp_overrides += workers[i].lsp_overrides;
+            total_unresolved_receiver += workers[i].calls_unresolved_receiver;
             cbm_gbuf_free(workers[i].local_edge_buf);
         }
     }
@@ -2483,7 +2501,8 @@ int cbm_parallel_resolve(cbm_pipeline_ctx_t *ctx, const cbm_file_info_t *files, 
 
     cbm_log_info("parallel.resolve.done", "calls", itoa_log(total_calls), "usages",
                  itoa_log(total_usages), "semantic", itoa_log(total_semantic + go_impl),
-                 "lsp_overrides", itoa_log(total_lsp_overrides));
+                 "lsp_overrides", itoa_log(total_lsp_overrides),
+                 "unresolved_receiver", itoa_log(total_unresolved_receiver));
 
     /* Per-sub-phase breakdown so we stop guessing about hot paths.
      * Numbers are summed across workers (total CPU-ms, not wall-time).

@@ -400,7 +400,8 @@ int cbm_pipeline_pass_calls(cbm_pipeline_ctx_t *ctx, const cbm_file_info_t *file
 
     int total_calls = 0;
     int resolved = 0;
-    int unresolved = 0;
+    int unresolved_receiver = 0;
+    int unresolved_other = 0;
     int errors = 0;
 
     for (int i = 0; i < file_count; i++) {
@@ -443,7 +444,29 @@ int cbm_pipeline_pass_calls(cbm_pipeline_ctx_t *ctx, const cbm_file_info_t *file
                                     imp_vals, imp_count)) {
                 resolved++;
             } else {
-                unresolved++;
+                /* Distinguish unresolved-receiver from other unresolved.
+                 * Extract the receiver prefix (text before the first '.' or '::')
+                 * and check if it looks like an unresolved object expression. */
+                const char *dot = strchr(call->callee_name, '.');
+                const char *colons = strstr(call->callee_name, "::");
+                const char *sep = dot;
+                if (colons && (!sep || colons < sep)) {
+                    sep = colons;
+                }
+                if (sep) {
+                    char prefix[CBM_SZ_256];
+                    size_t plen = (size_t)(sep - call->callee_name);
+                    if (plen >= sizeof(prefix)) plen = sizeof(prefix) - 1;
+                    memcpy(prefix, call->callee_name, plen);
+                    prefix[plen] = '\0';
+                    if (cbm_registry_is_unresolved_receiver_prefix(prefix)) {
+                        unresolved_receiver++;
+                    } else {
+                        unresolved_other++;
+                    }
+                } else {
+                    unresolved_other++;
+                }
             }
         }
 
@@ -455,7 +478,8 @@ int cbm_pipeline_pass_calls(cbm_pipeline_ctx_t *ctx, const cbm_file_info_t *file
     }
 
     cbm_log_info("pass.done", "pass", "calls", "total", itoa_log(total_calls), "resolved",
-                 itoa_log(resolved), "unresolved", itoa_log(unresolved), "errors",
+                 itoa_log(resolved), "unresolved_receiver", itoa_log(unresolved_receiver),
+                 "unresolved_other", itoa_log(unresolved_other), "errors",
                  itoa_log(errors));
 
     /* Additional pattern-based edge passes run after normal call resolution */

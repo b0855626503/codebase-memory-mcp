@@ -103,6 +103,27 @@ static const char *simple_name(const char *qn) {
     return seg;
 }
 
+/* Returns true when a callee prefix looks like an unresolved receiver
+ * expression (PHP $this->xxx, $variable, or contains -> chain). These
+ * cannot be resolved by name-only lookup — the receiver type is unknown to
+ * the static analyzer (constructor-injected dependency, service container,
+ * etc.). Skipping prevents thousands of false CALLS edges.
+ *
+ * False negatives are acceptable trade-off. False positives corrupt the
+ * entire call graph (fan_in, hotspots, architecture reasoning). */
+bool cbm_registry_is_unresolved_receiver_prefix(const char *prefix) {
+    if (!prefix || !prefix[0]) {
+        return false;
+    }
+    if (prefix[0] == '$') {
+        return true; /* $this, $variable */
+    }
+    if (strstr(prefix, "->")) {
+        return true; /* method chain, e.g. obj->method */
+    }
+    return false;
+}
+
 /* Extract everything before the last dot. Returns heap-allocated string. */
 
 /* Count common dot-separated prefix segments. */
@@ -675,8 +696,19 @@ cbm_resolution_t cbm_registry_resolve(const cbm_registry_t *r, const char *calle
         res = resolve_same_module(r, callee_name, suffix, module_qn);
     }
     if (!(res.qualified_name && res.qualified_name[0])) {
-        /* Strategy 3+4: name lookup */
-        res = resolve_name_lookup(r, callee_name, module_qn, import_map_vals, import_map_count);
+        /* Block name-only fallback (strategies 3+4) when the callee prefix
+         * is an unresolved receiver expression like $this->repository.
+         * Without this guard, $this->repository->create() matches every
+         * method named "create" in the codebase — thousands of false CALLS
+         * edges that corrupt fan_in, hotspots, and architecture reasoning.
+         *
+         * False negatives are acceptable. False positives are not. */
+        if (cbm_registry_is_unresolved_receiver_prefix(prefix)) {
+            res = empty_result();
+        } else {
+            /* Strategy 3+4: name lookup */
+            res = resolve_name_lookup(r, callee_name, module_qn, import_map_vals, import_map_count);
+        }
     }
 
     /* Cache the result (including empty — caching the negative answer
