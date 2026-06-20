@@ -441,6 +441,7 @@ typedef struct {
     CBMInfraBindingArray infra_bindings; // topic→URL pairs from IaC configs
     CBMChannelArray channels;            // Socket.IO / EventEmitter pub/sub participation
 
+    const char *file_path;      // relative file path
     const char *module_qn;      // module qualified name
     const char *namespace_name; // declared namespace/package (Java/Kotlin/C#/PHP), NULL if none
     const char **exports;       // NULL-terminated (NULL if none)

@@ -4050,7 +4050,7 @@ void cbm_run_php_lsp(CBMArena *arena, CBMFileResult *result, const char *source,
                  * Other types → skip for now (properties are almost always named). */
                 const char *type_name = NULL;
                 if (ft->kind == CBM_TYPE_NAMED) {
-                    type_name = ft->named.qualified_name;
+                    type_name = ft->data.named.qualified_name;
                 }
                 if (!type_name) continue;
 

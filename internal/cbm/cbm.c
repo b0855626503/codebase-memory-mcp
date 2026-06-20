@@ -506,6 +506,7 @@ CBMFileResult *cbm_extract_file(const char *source, int source_len, CBMLanguage 
 
     cbm_arena_init(&result->arena);
     CBMArena *a = &result->arena;
+    result->file_path = rel_path;
 
     // Get language spec
     const CBMLangSpec *spec = cbm_lang_spec(language);
