@@ -4032,6 +4032,41 @@ void cbm_run_php_lsp(CBMArena *arena, CBMFileResult *result, const char *source,
                 }
             }
         }
+
+        /* Phase B.2: emit Field CBMDefinitions for all collected typed
+         * properties. These Field nodes (label="Field", parent_class=QN,
+         * return_type=type) enable cbm_registry_resolve_member_call() to
+         * resolve $this->x->method() via class_field_type strategy.
+         * Without this bridge, the LSP-collected field types are invisible
+         * to the pipeline's call resolution pass. */
+        for (int i = 0; i < tab.count; i++) {
+            php_class_fields_t *f = &tab.items[i];
+            if (f->count == 0) continue;
+            for (int j = 0; j < f->count; j++) {
+                const CBMType *ft = f->field_types[j];
+                if (!ft || ft->kind == CBM_TYPE_UNKNOWN) continue;
+                /* Serialize CBMType to a resolvable type name.
+                 * CBM_TYPE_NAMED → fully-qualified class QN (registry exact match).
+                 * Other types → skip for now (properties are almost always named). */
+                const char *type_name = NULL;
+                if (ft->kind == CBM_TYPE_NAMED) {
+                    type_name = ft->named.qualified_name;
+                }
+                if (!type_name) continue;
+
+                CBMDefinition def;
+                memset(&def, 0, sizeof(def));
+                def.name = f->field_names[j];
+                def.qualified_name =
+                    cbm_arena_sprintf(ctx.arena, "%s.%s", f->class_qn, f->field_names[j]);
+                def.label = "Field";
+                def.file_path = result->file_path;
+                def.parent_class = f->class_qn;
+                def.return_type = type_name;
+                def.is_exported = true;
+                cbm_defs_push(&result->defs, ctx.arena, def);
+            }
+        }
     }
 
     php_lsp_process_file(&ctx, root);

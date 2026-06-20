@@ -3287,6 +3287,146 @@ static void extract_class_def(CBMExtractCtx *ctx, TSNode node, const CBMLangSpec
     // Extract class-level variables (field declarations)
     extract_class_variables(ctx, node, spec);
 
+    // PHP: constructor-injected properties. The LSP-collected field types are
+    // emitted too late (after pass_definitions consumes result->defs), so we
+    // must extract Field defs during the initial extraction phase.
+    if (ctx->language == CBM_LANG_PHP) {
+        TSNode body = find_class_body(node, ctx->language);
+        if (!ts_node_is_null(body)) {
+            uint32_t bc = ts_node_child_count(body);
+            for (uint32_t ci = 0; ci < bc; ci++) {
+                TSNode child = ts_node_child(body, ci);
+                if (ts_node_is_null(child) || !ts_node_is_named(child)) continue;
+                if (strcmp(ts_node_type(child), "method_declaration") != 0) continue;
+                TSNode mname = ts_node_child_by_field_name(child, TS_FIELD("name"));
+                char *mn = !ts_node_is_null(mname) ?
+                    cbm_node_text(a, mname, ctx->source) : NULL;
+                int is_ctor = mn && strcmp(mn, "__construct") == 0;
+
+                // Collect parameter types: param_name → type_text
+                TSNode params = ts_node_child_by_field_name(child, TS_FIELD("parameters"));
+                if (!ts_node_is_null(params)) {
+                    uint32_t pnc = ts_node_child_count(params);
+                    for (uint32_t pj = 0; pj < pnc; pj++) {
+                        TSNode p = ts_node_child(params, pj);
+                        if (ts_node_is_null(p) || !ts_node_is_named(p)) continue;
+                        const char *pk = ts_node_type(p);
+                        bool promoted = (strcmp(pk, "property_promotion_parameter") == 0);
+                        if (!promoted && strcmp(pk, "simple_parameter") != 0) continue;
+                        // Get type
+                        TSNode tn = ts_node_child_by_field_name(p, TS_FIELD("type"));
+                        char *type_text = !ts_node_is_null(tn) ?
+                            cbm_node_text(a, tn, ctx->source) : NULL;
+                        if (!type_text) continue;
+                        // Get name
+                        TSNode vn = ts_node_child_by_field_name(p, TS_FIELD("name"));
+                        char *pname = !ts_node_is_null(vn) ?
+                            cbm_node_text(a, vn, ctx->source) : NULL;
+                        if (!pname) continue;
+                        const char *fname = (pname[0] == '$') ? pname + 1 : pname;
+
+                        // Emit Field def for both promoted params and
+                        // typed constructor params (Pattern 2 & 3).
+                        if (promoted || is_ctor) {
+                            CBMDefinition field_def;
+                            memset(&field_def, 0, sizeof(field_def));
+                            field_def.name = fname;
+                            field_def.qualified_name =
+                                cbm_arena_sprintf(a, "%s.%s", class_qn, fname);
+                            field_def.label = "Field";
+                            field_def.file_path = ctx->rel_path;
+                            field_def.parent_class = class_qn;
+                            field_def.return_type = type_text;
+                            field_def.is_exported = promoted;
+                            cbm_defs_push(&ctx->result->defs, a, field_def);
+                        }
+                    }
+                }
+
+                // Constructor body: $this->x = $param assignments (Pattern 2)
+                if (!is_ctor) continue;
+                TSNode cbody = ts_node_child_by_field_name(child, TS_FIELD("body"));
+                if (ts_node_is_null(cbody)) continue;
+                // Iterative DFS over body
+                enum { CTOR_STACK_MAX = 128 };
+                TSNode stack[CTOR_STACK_MAX];
+                int sp = 0;
+                stack[sp++] = cbody;
+                while (sp > 0) {
+                    TSNode cur = stack[--sp];
+                    if (strcmp(ts_node_type(cur), "expression_statement") == 0) {
+                        uint32_t esc = ts_node_child_count(cur);
+                        for (uint32_t ei = 0; ei < esc; ei++) {
+                            TSNode ec = ts_node_child(cur, ei);
+                            if (ts_node_is_null(ec) || !ts_node_is_named(ec)) continue;
+                            if (strcmp(ts_node_type(ec), "assignment_expression") != 0) continue;
+                            TSNode left = ts_node_child_by_field_name(ec, TS_FIELD("left"));
+                            TSNode right = ts_node_child_by_field_name(ec, TS_FIELD("right"));
+                            if (ts_node_is_null(left) || ts_node_is_null(right)) continue;
+                            // left must be member_access_expression on $this
+                            if (strcmp(ts_node_type(left), "member_access_expression") != 0) continue;
+                            TSNode obj = ts_node_child_by_field_name(left, TS_FIELD("object"));
+                            if (ts_node_is_null(obj)) continue;
+                            char *ot = cbm_node_text(a, obj, ctx->source);
+                            if (!ot || strcmp(ot, "$this") != 0) continue;
+                            TSNode fname_node =
+                                ts_node_child_by_field_name(left, TS_FIELD("name"));
+                            char *fn_text = !ts_node_is_null(fname_node) ?
+                                cbm_node_text(a, fname_node, ctx->source) : NULL;
+                            if (!fn_text) continue;
+                            // right must be a variable_name
+                            if (strcmp(ts_node_type(right), "variable_name") != 0) continue;
+                            char *rt = cbm_node_text(a, right, ctx->source);
+                            if (!rt) continue;
+                            const char *rp = (rt[0] == '$') ? rt + 1 : rt;
+                            // Find rp in constructor params → get type
+                            // Re-scan params to find matching parameter
+                            if (!ts_node_is_null(params)) {
+                                uint32_t pnc2 = ts_node_child_count(params);
+                                for (uint32_t pj2 = 0; pj2 < pnc2; pj2++) {
+                                    TSNode p2 = ts_node_child(params, pj2);
+                                    if (ts_node_is_null(p2) || !ts_node_is_named(p2)) continue;
+                                    TSNode vn2 =
+                                        ts_node_child_by_field_name(p2, TS_FIELD("name"));
+                                    char *pn2 = !ts_node_is_null(vn2) ?
+                                        cbm_node_text(a, vn2, ctx->source) : NULL;
+                                    if (!pn2) continue;
+                                    const char *pn2n = (pn2[0] == '$') ? pn2 + 1 : pn2;
+                                    if (strcmp(pn2n, rp) != 0) continue;
+                                    TSNode tn2 =
+                                        ts_node_child_by_field_name(p2, TS_FIELD("type"));
+                                    char *type_text2 = !ts_node_is_null(tn2) ?
+                                        cbm_node_text(a, tn2, ctx->source) : NULL;
+                                    if (!type_text2) break;
+                                    CBMDefinition field_def;
+                                    memset(&field_def, 0, sizeof(field_def));
+                                    field_def.name = fn_text;
+                                    field_def.qualified_name =
+                                        cbm_arena_sprintf(a, "%s.%s", class_qn, fn_text);
+                                    field_def.label = "Field";
+                                    field_def.file_path = ctx->rel_path;
+                                    field_def.parent_class = class_qn;
+                                    field_def.return_type = type_text2;
+                                    field_def.is_exported = true;
+                                    cbm_defs_push(&ctx->result->defs, a, field_def);
+                                    break;
+                                }
+                            }
+                        }
+                    }
+                    // Push children for DFS (depth-limited)
+                    uint32_t nc = ts_node_child_count(cur);
+                    for (uint32_t i = nc; i > 0 && sp < CTOR_STACK_MAX - 1; i--) {
+                        TSNode c = ts_node_child(cur, i - 1);
+                        if (!ts_node_is_null(c) && ts_node_is_named(c)) {
+                            stack[sp++] = c;
+                        }
+                    }
+                }
+            }
+        }
+    }
+
     // C# 12 primary-constructor parameters: declared on the class line
     // (`class Foo(IBar bar, IBaz baz) : Base { ... }`) and bound to implicit
     // captured fields accessible from any instance member. Tree-sitter c-sharp
