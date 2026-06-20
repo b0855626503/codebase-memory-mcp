@@ -980,13 +980,41 @@ cbm_resolution_t cbm_registry_resolve_member_call(const cbm_registry_t *r, const
     target_qn[clen] = '.';
     memcpy(target_qn + clen + SKIP_ONE, method_name, mlen + 1); /* +1 for NUL */
 
-    /* Step 6: Verify target exists in registry */
-    const char *target_label = cbm_registry_label_of(r, target_qn);
+    /* Step 6: Verify target exists in registry, walking INHERITS chain.
+     * Laravel repositories commonly extend a base class (e.g.
+     * BankRepository extends Repository). Methods like findOneWhere(),
+     * find(), findOrFail() are defined on the parent, not the leaf.
+     * Walk the INHERITS graph edges to find the method on any ancestor. */
+    const char *target_label = NULL;
+    const char *resolved_qn = target_qn;
+    const char *walk_qn = class_qn;
+    const cbm_gbuf_node_t *walk_node = cbm_gbuf_find_by_qn(gbuf, walk_qn);
+    char inherit_target[CBM_SZ_512];
+    while (walk_node && walk_qn) {
+        size_t wl = strlen(walk_qn);
+        if (wl + SKIP_ONE + mlen < CBM_SZ_512) {
+            memcpy(inherit_target, walk_qn, wl);
+            inherit_target[wl] = '.';
+            memcpy(inherit_target + wl + SKIP_ONE, method_name, mlen + 1);
+            target_label = cbm_registry_label_of(r, inherit_target);
+            if (target_label) {
+                resolved_qn = inherit_target;
+                break;
+            }
+        }
+        /* Follow INHERITS edge to parent class */
+        const cbm_gbuf_edge_t **edges = NULL;
+        int ecount = 0;
+        cbm_gbuf_find_edges_by_source_type(gbuf, walk_node->id, "INHERITS", &edges, &ecount);
+        if (ecount == 0) break;
+        walk_node = cbm_gbuf_find_by_id(gbuf, edges[0]->target_id);
+        walk_qn = walk_node ? walk_node->qualified_name : NULL;
+    }
     if (!target_label) {
         return empty_result();
     }
 
-    cbm_resolution_t res = {.qualified_name = target_qn,
+    cbm_resolution_t res = {.qualified_name = resolved_qn,
                             .strategy = "class_field_type",
                             .confidence = 0.90,
                             .candidate_count = 1};
