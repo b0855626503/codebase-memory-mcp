@@ -3124,6 +3124,12 @@ const char *cbm_qn_to_package(const char *qn) {
     if (!qn || !qn[0]) {
         return "";
     }
+    /* Synthetic route identifiers (__route__...) are not real qualified names —
+     * they carry URL paths and deprecation messages. Skip them to avoid
+     * extracting garbage package names that break downstream classifiers. */
+    if (strncmp(qn, "__route__", 9) == 0) {
+        return "";
+    }
     static CBM_TLS char buf[CBM_SZ_256];
     /* Find dots and extract segment */
     const char *dots[ST_QN_MAX_DOTS] = {NULL};

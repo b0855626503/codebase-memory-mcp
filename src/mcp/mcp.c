@@ -4227,29 +4227,34 @@ static char *handle_smart_analyze(cbm_mcp_server_t *srv, const char *args) {
     REQUIRE_STORE(store, project);
     char *not_indexed = verify_project_indexed(store, project);
     if (not_indexed) { free(project); return not_indexed; }
-    /* Dedup: skip incident creation if project was already analyzed.
-     * Check for existing incidents — if any found, this is a re-run. */
+    /* Dedup: load existing incidents once; skip only per-title duplicates,
+     * not the entire batch. This avoids re-creating the same incidents
+     * on re-runs while still allowing new findings to be recorded. */
     cbm_incident_t *existing = NULL; int existing_count = 0;
     cbm_store_incident_list(store, project, &existing, &existing_count);
-    bool skip_incidents = (existing_count > 0);
-    if (existing) cbm_store_incident_free(existing, existing_count);
 
     cbm_architecture_info_t arch = {0};
     const char *asp[] = {"packages","layers","hotspots","routes","boundaries","languages",NULL};
     cbm_store_get_architecture(store, project, asp, 6, &arch);
     int ai = 0, vi = 0;
 
-    if (!skip_incidents) {
     for (int i = 0; i < arch.hotspot_count && i < 10; i++) {
         if (arch.hotspots[i].fan_in >= 100) {
             char t[256]; snprintf(t,sizeof(t),"God Object: %s (fan_in=%d)",
                 arch.hotspots[i].name?arch.hotspots[i].name:"?",arch.hotspots[i].fan_in);
+            /* Only create if this exact title hasn't been reported before */
+            bool dup = false;
+            for (int j = 0; j < existing_count; j++) {
+                if (existing[j].title && strcmp(existing[j].title, t) == 0) { dup = true; break; }
+            }
+            if (!dup) {
             char d[1024]; snprintf(d,sizeof(d),"fan_in=%d. Consider refactoring.",
                 arch.hotspots[i].fan_in);
             char a[512]; snprintf(a,sizeof(a),"[\"%s\"]",
                 arch.hotspots[i].qualified_name?arch.hotspots[i].qualified_name:"");
             cbm_store_incident_create(store,project,t,d,a,"High fan-in","",
                 arch.hotspots[i].fan_in>=200?"critical":"high"); ai++;
+            }
         }
     }
     for (int i = 0; i < arch.boundary_count && i < 20; i++) {
@@ -4258,14 +4263,21 @@ static char *handle_smart_analyze(cbm_mcp_server_t *srv, const char *args) {
                 arch.boundaries[i].from?arch.boundaries[i].from:"?",
                 arch.boundaries[i].to?arch.boundaries[i].to:"?",
                 arch.boundaries[i].call_count);
+            /* Only create if this exact title hasn't been reported before */
+            bool dup = false;
+            for (int j = 0; j < existing_count; j++) {
+                if (existing[j].title && strcmp(existing[j].title, t) == 0) { dup = true; break; }
+            }
+            if (!dup) {
             char d[512]; snprintf(d,sizeof(d),"Boundary crossing %s -> %s: %d calls.",
                 arch.boundaries[i].from?arch.boundaries[i].from:"?",
                 arch.boundaries[i].to?arch.boundaries[i].to:"?",
                 arch.boundaries[i].call_count);
             cbm_store_incident_create(store,project,t,d,"","Boundary crossing","","high"); ai++; vi++;
+            }
         }
     }
-    } /* !skip_incidents */
+    if (existing) cbm_store_incident_free(existing, existing_count);
     char ab[8192]; int ap = 0;
     ap += snprintf(ab+ap,sizeof(ab)-ap,"## ADR: %s\n\n**Auto-generated**\n**Nodes:** %d | **Edges:** %d\n",
         project,cbm_store_count_nodes(store,project),cbm_store_count_edges(store,project));
@@ -4514,10 +4526,17 @@ static char *handle_detect_dead_code(cbm_mcp_server_t *srv, const char *args) {
         " COALESCE(json_extract(n.properties,'$.is_entry_point'),0) AS is_entry,"
         " (SELECT COUNT(*) FROM edges e WHERE (e.source_id=n.id OR e.target_id=n.id) AND e.type='RUNTIME_CALLS') AS runtime_edges"
         " FROM nodes n WHERE n.project=?1 AND n.label IN('Function','Method') AND fan_in<=2"
-        " AND n.file_path NOT LIKE 'public/%'"
+        " AND n.file_path NOT LIKE '%public/%'"
         " AND n.file_path NOT LIKE '%/assets/%'"
         " AND n.file_path NOT LIKE '%/optimized%'"
-        " AND n.file_path NOT LIKE '%.min.js%'"
+        " AND n.file_path NOT LIKE '%.min.%'"
+        " AND n.file_path NOT LIKE '%/dist/%'"
+        " AND n.file_path NOT LIKE '%/build/%'"
+        " AND n.file_path NOT LIKE '%node_modules%'"
+        " AND n.file_path NOT LIKE '%.bundle.%'"
+        " AND n.file_path NOT LIKE '%.chunk.%'"
+        " AND n.file_path NOT LIKE '%.vendor.%'"
+        " AND n.file_path NOT LIKE '%/vendor/%'"
         " ORDER BY fan_in ASC,fan_out ASC,runtime_edges ASC LIMIT ?2";
     yyjson_mut_doc *doc=yyjson_mut_doc_new(NULL);
     yyjson_mut_val *root=yyjson_mut_obj(doc);yyjson_mut_doc_set_root(doc,root);
