@@ -678,6 +678,24 @@ int cbm_gbuf_find_by_name(const cbm_gbuf_t *gb, const char *name, const cbm_gbuf
     return 0;
 }
 
+const cbm_gbuf_node_t *cbm_gbuf_find_class_field(const cbm_gbuf_t *gb, const char *class_qn,
+                                                  const char *field_name) {
+    if (!gb || !class_qn || !field_name) {
+        return NULL;
+    }
+    /* Field nodes are stored with QN = class_qn.field_name */
+    size_t clen = strlen(class_qn);
+    size_t flen = strlen(field_name);
+    char field_qn[CBM_SZ_512];
+    if (clen + SKIP_ONE + flen >= sizeof(field_qn)) {
+        return NULL; /* QN too long */
+    }
+    memcpy(field_qn, class_qn, clen);
+    field_qn[clen] = '.';
+    memcpy(field_qn + clen + SKIP_ONE, field_name, flen + SKIP_ONE); /* +1 for NUL */
+    return cbm_gbuf_find_by_qn(gb, field_qn);
+}
+
 int cbm_gbuf_node_count(const cbm_gbuf_t *gb) {
     /* Use QN hash table count since it's authoritative (handles deletes) */
     return gb ? (int)cbm_ht_count(gb->node_by_qn) : 0;

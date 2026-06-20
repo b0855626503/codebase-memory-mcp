@@ -236,6 +236,12 @@ typedef struct {
     int loop_depth;                     // enclosing loop nesting at the call site
     int branch_depth;                   // enclosing branch nesting at the call site
     int start_line;                     // 1-based source line of the call (for def range-match)
+    /* Constructor-injection resolution: receiver expression.
+     * When the call is a member access like $this->points->debit():
+     *   receiver_expr = "$this->points" (the object expression text)
+     * NULL when the call is not a member access. The enclosing class QN
+     * is derived from enclosing_func_qn at resolution time. */
+    const char *receiver_expr;
 } CBMCall;
 
 typedef struct {

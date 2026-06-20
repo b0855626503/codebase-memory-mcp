@@ -1808,8 +1808,27 @@ static void resolve_file_calls(resolve_ctx_t *rc, resolve_worker_state_t *ws, CB
                 ws->lsp_overrides++;
             }
         } else {
-            res = cbm_registry_resolve(rc->registry, call->callee_name, module_qn, imp_keys,
-                                       imp_vals, imp_count);
+            /* Constructor-injection resolution: $this->property->method().
+             * Derive enclosing class QN from the function QN, then look up
+             * the property's type via class Field definitions in the gbuf. */
+            if (call->receiver_expr && call->enclosing_func_qn) {
+                const char *last_dot = strrchr(call->enclosing_func_qn, '.');
+                if (last_dot && last_dot != call->enclosing_func_qn) {
+                    size_t class_len = (size_t)(last_dot - call->enclosing_func_qn);
+                    if (class_len < CBM_SZ_256) {
+                        char class_qn[CBM_SZ_256];
+                        memcpy(class_qn, call->enclosing_func_qn, class_len);
+                        class_qn[class_len] = '\0';
+                        res = cbm_registry_resolve_member_call(
+                            rc->registry, rc->main_gbuf, call->receiver_expr,
+                            call->callee_name, class_qn);
+                    }
+                }
+            }
+            if (!res.qualified_name || res.qualified_name[0] == '\0') {
+                res = cbm_registry_resolve(rc->registry, call->callee_name, module_qn, imp_keys,
+                                           imp_vals, imp_count);
+            }
         }
         atomic_fetch_add_explicit(&rc->time_ns_rc_resolve, extract_now_ns() - _rc_t0,
                                   memory_order_relaxed);

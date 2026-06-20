@@ -757,6 +757,11 @@ static void walk_calls(CBMExtractCtx *ctx, TSNode root, const CBMLangSpec *spec)
                 call.callee_name = callee;
                 call.enclosing_func_qn = cbm_enclosing_func_qn_cached(ctx, node);
 
+                TSNode obj = ts_node_child_by_field_name(node, TS_FIELD("object"));
+                if (!ts_node_is_null(obj)) {
+                    call.receiver_expr = cbm_node_text(ctx->arena, obj, ctx->source);
+                }
+
                 TSNode args = ts_node_child_by_field_name(node, TS_FIELD("arguments"));
                 if (!ts_node_is_null(args)) {
                     call.first_string_arg = extract_first_string_arg(ctx, args);
@@ -1131,9 +1136,16 @@ void handle_calls(CBMExtractCtx *ctx, TSNode node, const CBMLangSpec *spec, Walk
             CBMCall call = {0};
             call.callee_name = callee;
             call.enclosing_func_qn = state->enclosing_func_qn;
-            call.loop_depth = state->loop_depth;     // enclosing loop nesting at this call
-            call.branch_depth = state->branch_depth; // enclosing branch nesting at this call
+            call.loop_depth = state->loop_depth;
+            call.branch_depth = state->branch_depth;
             call.start_line = (int)ts_node_start_point(node).row + TS_LINE_OFFSET;
+
+            /* Extract receiver expression for member calls ($this->property->method()).
+             * This enables constructor-injection type resolution in the pipeline. */
+            TSNode obj = ts_node_child_by_field_name(node, TS_FIELD("object"));
+            if (!ts_node_is_null(obj)) {
+                call.receiver_expr = cbm_node_text(ctx->arena, obj, ctx->source);
+            }
 
             TSNode args = ts_node_child_by_field_name(node, TS_FIELD("arguments"));
             if (!ts_node_is_null(args)) {

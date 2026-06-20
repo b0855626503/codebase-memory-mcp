@@ -10,6 +10,7 @@
  *   4. Suffix match with import distance scoring
  */
 #include "foundation/constants.h"
+#include "graph_buffer/graph_buffer.h"
 
 enum { REG_INIT_CAP = 16, REG_MIN_CANDIDATES = 3, REG_RESOLVED = 1, REG_SUFFIX_ALLOC = 2 };
 /* Names with more registered definitions than this are unresolvable by name
@@ -858,4 +859,136 @@ int cbm_registry_find_ending_with(const cbm_registry_t *r, const char *suffix, c
 bool cbm_registry_is_import_reachable(const char *candidate_qn, const char **import_vals,
                                       int import_count) {
     return is_import_reachable(candidate_qn, import_vals, import_count);
+}
+
+/* ── Constructor-injection member call resolution ─────────────────── */
+
+/* Extract property name from a receiver expression.
+ * "$this->points"     → "points"
+ * "$this->repository" → "repository"
+ * "$obj"              → "obj"  (no ->, the whole thing after $)
+ * Returns pointer into the string (no allocation). */
+static const char *receiver_property_name(const char *receiver_expr) {
+    if (!receiver_expr || !receiver_expr[0]) {
+        return NULL;
+    }
+    /* Skip leading '$' */
+    const char *p = receiver_expr[0] == '$' ? receiver_expr + 1 : receiver_expr;
+    /* If there's a "->", the property name follows it.
+     * e.g. "$this->points" → skip "$this->", return "points" */
+    const char *arrow = strstr(p, "->");
+    if (arrow) {
+        return arrow + 2; /* skip "->" */
+    }
+    return p; /* just "$var" — return var name */
+}
+
+cbm_resolution_t cbm_registry_resolve_member_call(const cbm_registry_t *r, const cbm_gbuf_t *gbuf,
+                                                   const char *receiver_expr,
+                                                   const char *method_name,
+                                                   const char *enclosing_class_qn) {
+    if (!r || !gbuf || !receiver_expr || !method_name || !enclosing_class_qn) {
+        return empty_result();
+    }
+
+    /* Step 1: Extract property name from receiver expression */
+    const char *prop = receiver_property_name(receiver_expr);
+    if (!prop || !prop[0]) {
+        return empty_result();
+    }
+
+    /* Step 2: Look up the Field node for this class + property */
+    const cbm_gbuf_node_t *field_node =
+        cbm_gbuf_find_class_field(gbuf, enclosing_class_qn, prop);
+    if (!field_node || !field_node->properties_json) {
+        return empty_result();
+    }
+
+    /* Step 3: Extract return_type from Field's properties_json.
+     * Format: {"return_type":"PointsService",...} */
+    const char *props = field_node->properties_json;
+    const char *rt_key = "\"return_type\":\"";
+    const char *rt_start = strstr(props, rt_key);
+    if (!rt_start) {
+        return empty_result();
+    }
+    rt_start += strlen(rt_key);
+    const char *rt_end = strchr(rt_start, '"');
+    if (!rt_end || rt_end == rt_start) {
+        return empty_result();
+    }
+    size_t rt_len = (size_t)(rt_end - rt_start);
+    if (rt_len == 0 || rt_len >= CBM_SZ_256) {
+        return empty_result();
+    }
+    char type_name[CBM_SZ_256];
+    memcpy(type_name, rt_start, rt_len);
+    type_name[rt_len] = '\0';
+
+    /* Step 4: Resolve type_name to a fully-qualified class QN.
+     * The type_name from PHP may be a short name (e.g. "PointsService")
+     * or a fully-qualified name. Try the registry's exact index first,
+     * then by-name lookup. */
+    const char *class_qn = NULL;
+    const char *label = cbm_registry_label_of(r, type_name);
+    if (label) {
+        /* exact match — type_name is already a full QN */
+        class_qn = type_name;
+    } else {
+        /* Short name — use by-name lookup to find the class */
+        const char **candidates = NULL;
+        int cand_count = 0;
+        cbm_registry_find_by_name(r, type_name, &candidates, &cand_count);
+        if (cand_count == SKIP_ONE) {
+            class_qn = candidates[0];
+        } else if (cand_count > SKIP_ONE) {
+            /* Multiple candidates — prefer one in the same package as the caller */
+            for (int ci = 0; ci < cand_count; ci++) {
+                if (cbm_registry_label_of(r, candidates[ci])) {
+                    /* Check for common prefix with enclosing_class_qn */
+                    size_t class_qn_len = strlen(enclosing_class_qn);
+                    if (strncmp(candidates[ci], enclosing_class_qn, class_qn_len) == 0 &&
+                        candidates[ci][class_qn_len] == '.') {
+                        class_qn = candidates[ci];
+                        break;
+                    }
+                }
+            }
+            if (!class_qn) {
+                /* Fallback: pick first candidate that is a Class/Interface */
+                for (int ci = 0; ci < cand_count; ci++) {
+                    if (cbm_registry_label_of(r, candidates[ci])) {
+                        class_qn = candidates[ci];
+                        break;
+                    }
+                }
+            }
+        }
+    }
+    if (!class_qn) {
+        return empty_result();
+    }
+
+    /* Step 5: Construct target QN = class_qn.method_name */
+    size_t clen = strlen(class_qn);
+    size_t mlen = strlen(method_name);
+    if (clen + SKIP_ONE + mlen >= CBM_SZ_512) {
+        return empty_result();
+    }
+    char target_qn[CBM_SZ_512];
+    memcpy(target_qn, class_qn, clen);
+    target_qn[clen] = '.';
+    memcpy(target_qn + clen + SKIP_ONE, method_name, mlen + 1); /* +1 for NUL */
+
+    /* Step 6: Verify target exists in registry */
+    const char *target_label = cbm_registry_label_of(r, target_qn);
+    if (!target_label) {
+        return empty_result();
+    }
+
+    cbm_resolution_t res = {.qualified_name = target_qn,
+                            .strategy = "class_field_type",
+                            .confidence = 0.90,
+                            .candidate_count = 1};
+    return res;
 }

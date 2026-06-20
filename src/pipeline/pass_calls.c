@@ -361,6 +361,32 @@ static int resolve_single_call(cbm_pipeline_ctx_t *ctx, CBMCall *call,
         }
     }
 
+    /* Constructor-injection resolution: $this->property->method().
+     * Derive enclosing class QN from the function QN (last dot = method separator),
+     * then look up the property's type via class Field definitions. */
+    if (call->receiver_expr && call->enclosing_func_qn) {
+        const char *last_dot = strrchr(call->enclosing_func_qn, '.');
+        if (last_dot && last_dot != call->enclosing_func_qn) {
+            size_t class_len = (size_t)(last_dot - call->enclosing_func_qn);
+            if (class_len < CBM_SZ_256) {
+                char class_qn[CBM_SZ_256];
+                memcpy(class_qn, call->enclosing_func_qn, class_len);
+                class_qn[class_len] = '\0';
+                cbm_resolution_t member_res = cbm_registry_resolve_member_call(
+                    ctx->registry, ctx->gbuf, call->receiver_expr, call->callee_name, class_qn);
+                if (member_res.qualified_name && member_res.qualified_name[0]) {
+                    const cbm_gbuf_node_t *mtgt =
+                        cbm_gbuf_find_by_qn(ctx->gbuf, member_res.qualified_name);
+                    if (mtgt && source_node->id != mtgt->id) {
+                        emit_classified_edge(ctx, call, source_node, mtgt, &member_res, module_qn,
+                                             imp_keys, imp_vals, imp_count);
+                        return SKIP_ONE;
+                    }
+                }
+            }
+        }
+    }
+
     cbm_resolution_t res = cbm_registry_resolve(ctx->registry, call->callee_name, module_qn,
                                                 imp_keys, imp_vals, imp_count);
     if (!res.qualified_name || res.qualified_name[0] == '\0') {

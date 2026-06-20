@@ -146,6 +146,20 @@ cbm_resolution_t cbm_registry_resolve(const cbm_registry_t *r, const char *calle
  * other" in pass diagnostics. */
 bool cbm_registry_is_unresolved_receiver_prefix(const char *prefix);
 
+/* Forward declaration — graph_buffer types used by resolve_member_call. */
+struct cbm_gbuf;
+typedef struct cbm_gbuf cbm_gbuf_t;
+
+/* Resolve obj->method() using class-level property type information from
+ * the graph buffer. Strips "$this->" from receiver_expr to get the property
+ * name, looks up the Field node, reads its return_type, and constructs the
+ * target method QN. Returns resolution with strategy="class_field_type" and
+ * confidence=0.90 on success, or empty_result() if any step fails. */
+cbm_resolution_t cbm_registry_resolve_member_call(const cbm_registry_t *r, const cbm_gbuf_t *gbuf,
+                                                   const char *receiver_expr,
+                                                   const char *method_name,
+                                                   const char *enclosing_class_qn);
+
 /* Per-file memoization cache for is_import_reachable. Thread-local —
  * each resolve worker owns its own cache. Call _begin at the start
  * of resolve_file_calls (or any per-file resolve loop) and _end at

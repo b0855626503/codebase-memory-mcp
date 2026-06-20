@@ -90,6 +90,12 @@ int cbm_gbuf_find_by_label(const cbm_gbuf_t *gb, const char *label, const cbm_gb
 int cbm_gbuf_find_by_name(const cbm_gbuf_t *gb, const char *name, const cbm_gbuf_node_t ***out,
                           int *count);
 
+/* Find a Field node for a class by property name. Constructs the Field QN
+ * as class_qn.field_name and looks it up via find_by_qn. Returns the Field
+ * node or NULL. Used for constructor-injection type resolution. */
+const cbm_gbuf_node_t *cbm_gbuf_find_class_field(const cbm_gbuf_t *gb, const char *class_qn,
+                                                  const char *field_name);
+
 /* Count total nodes in buffer. */
 int cbm_gbuf_node_count(const cbm_gbuf_t *gb);
 
