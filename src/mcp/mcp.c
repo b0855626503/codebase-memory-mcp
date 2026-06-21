@@ -29,7 +29,9 @@ enum {
     MCP_DEFAULT_LIMIT = 10,
     MCP_BFS_LIMIT = 100,
     MCP_N_DEFAULTS_2 = 2,
+    MCP_N_DEFAULTS_3 = 3,
     MCP_N_DEFAULTS_4 = 4,
+    MCP_N_DEFAULTS_6 = 6,
     MCP_URI_PREFIX = 7,      /* strlen("file://") */
     MCP_CONTENT_PREFIX = 15, /* strlen("Content-Length:") */
     MCP_RETURN_2 = 2,
@@ -2286,13 +2288,13 @@ static yyjson_doc *resolve_trace_edge_types(const char *args, const char *mode,
     yyjson_doc_free(et_doc); /* no explicit types found, free */
 
     const char **defaults = mode_calls;
-    int n_defaults = SKIP_ONE;
+    int n_defaults = MCP_N_DEFAULTS_3; /* CALLS + ROUTES_TO + HANDLES */
     if (mode && strcmp(mode, "data_flow") == 0) {
         defaults = mode_data_flow;
-        n_defaults = MCP_N_DEFAULTS_2;
+        n_defaults = MCP_N_DEFAULTS_4;
     } else if (mode && strcmp(mode, "cross_service") == 0) {
         defaults = mode_cross_svc;
-        n_defaults = MCP_N_DEFAULTS_4;
+        n_defaults = MCP_N_DEFAULTS_6;
     }
     for (int i = 0; i < n_defaults; i++) {
         out_types[i] = defaults[i];
