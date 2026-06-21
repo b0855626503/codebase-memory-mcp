@@ -44,37 +44,39 @@ static bool is_route_file(const char *file_path) {
     return false;
 }
 
-/* Build a controller method qualified_name from components.
- * Format: project.package_dir.ControllerClass.methodName
- * The package_dir is derived from the route file's path. */
-static char *build_controller_qn(const char *project, const char *route_file,
-                                  const char *controller_class, const char *method_name) {
-    /* Derive module path from route file: strip filename, convert / to . */
-    char module[CBM_SZ_512];
-    snprintf(module, sizeof(module), "%s", route_file ? route_file : "");
-    char *last_slash = strrchr(module, '/');
-    if (last_slash) *last_slash = '\0'; /* strip filename, keep dir */
+/* Find a Method node by controller class name + method name.
+ * Searches the graph buffer for nodes whose qualified_name contains
+ * the controller class name AND whose bare name matches the method.
+ * Returns node_id or -1 if not found or ambiguous. */
+static int64_t find_controller_method(cbm_gbuf_t *gbuf, const char *controller_class,
+                                       const char *method_name) {
+    if (!gbuf || !controller_class || !method_name) return CBM_NOT_FOUND;
 
-    /* Replace .php extension in controller_class if present */
-    char class_only[CBM_SZ_256];
-    snprintf(class_only, sizeof(class_only), "%s", controller_class ? controller_class : "");
-    char *dot_php = strstr(class_only, ".php");
-    if (dot_php) *dot_php = '\0';
+    /* Find all nodes with this method name */
+    const cbm_gbuf_node_t **nodes = NULL;
+    int count = 0;
+    if (cbm_gbuf_find_by_name(gbuf, method_name, &nodes, &count) != 0 || count == 0) {
+        return CBM_NOT_FOUND;
+    }
 
-    /* Build QN: project.dir.class.method */
-    char qn[CBM_SZ_512];
-    /* Convert directory slashes to dots */
-    for (char *p = module; *p; p++) if (*p == '/') *p = '.';
-    snprintf(qn, sizeof(qn), "%s.%s.%s.%s", project, module, class_only, method_name ? method_name : "__invoke");
-    return strdup(qn);
-}
+    /* Filter: keep only nodes whose QN contains the controller class name.
+     * Also require Method label (not Function). */
+    int64_t found_id = CBM_NOT_FOUND;
+    int matches = 0;
+    for (int i = 0; i < count; i++) {
+        const cbm_gbuf_node_t *n = nodes[i];
+        if (!n->qualified_name || !n->label) continue;
+        if (strcmp(n->label, "Method") != 0) continue;
+        /* Check if QN contains the controller class (e.g. ".HomeController.") */
+        if (strstr(n->qualified_name, controller_class)) {
+            found_id = n->id;
+            matches++;
+        }
+    }
 
-/* Find a Method node in the graph buffer by qualified_name.
- * Returns node_id or -1 if not found. */
-static int64_t find_method_by_qn(cbm_gbuf_t *gbuf, const char *qualified_name) {
-    if (!gbuf || !qualified_name) return CBM_NOT_FOUND;
-    const cbm_gbuf_node_t *node = cbm_gbuf_find_by_qn(gbuf, qualified_name);
-    return node ? node->id : CBM_NOT_FOUND;
+    /* Ambiguous or not found */
+    if (matches != 1) return CBM_NOT_FOUND;
+    return found_id;
 }
 
 /* Create or find a Route node and return its ID.
@@ -226,8 +228,7 @@ static int scan_route_definitions(const char *source, const char *file_path,
                 snprintf(full_path, sizeof(full_path), "%s%s", path, suffixes[ai]);
 
                 /* Find the controller method in the graph */
-                char *method_qn = build_controller_qn(project, file_path, controller, actions[ai]);
-                int64_t method_id = find_method_by_qn(gbuf, method_qn);
+                int64_t method_id = find_controller_method(gbuf, controller, actions[ai]);
                 if (method_id >= 0) {
                     int64_t route_id = ensure_route_node(gbuf, methods[ai], full_path);
                     if (route_id >= 0) {
@@ -240,12 +241,11 @@ static int scan_route_definitions(const char *source, const char *file_path,
                         created++;
                     }
                 }
-                free(method_qn);
             }
         } else {
             /* Single route: create one ROUTES_TO edge */
-            char *method_qn = build_controller_qn(project, file_path, controller, method[0] ? method : "__invoke");
-            int64_t method_id = find_method_by_qn(gbuf, method_qn);
+            const char *mname = method[0] ? method : "__invoke";
+            int64_t method_id = find_controller_method(gbuf, controller, mname);
             if (method_id >= 0) {
                 int64_t route_id = ensure_route_node(gbuf, method_upper, path);
                 if (route_id >= 0) {
@@ -258,7 +258,6 @@ static int scan_route_definitions(const char *source, const char *file_path,
                     created++;
                 }
             }
-            free(method_qn);
         }
 
         /* Advance past this route definition */
