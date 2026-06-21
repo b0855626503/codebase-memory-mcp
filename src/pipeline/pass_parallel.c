@@ -1198,6 +1198,11 @@ static void finalize_and_emit(cbm_gbuf_t *gbuf, int64_t src_id, int64_t tgt_id,
     if (n > 0 && (size_t)n < CBM_SZ_2K - PP_ESC_SPACE) {
         size_t pos = append_args_json(props, CBM_SZ_2K, (size_t)n, call);
         if (pos < CBM_SZ_2K - SKIP_ONE) {
+            // Persist call-site line number on CALLS edges (fixes issue #503)
+            if (call->start_line > 0 && pos < CBM_SZ_2K - 32) {
+                int wr = snprintf(props + pos, CBM_SZ_2K - pos, ",\"line\":%d", call->start_line);
+                if (wr > 0) pos += wr;
+            }
             props[pos] = '}';
             props[pos + SKIP_ONE] = '\0';
         }
