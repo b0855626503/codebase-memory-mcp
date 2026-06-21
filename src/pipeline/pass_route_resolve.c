@@ -37,8 +37,8 @@ static bool is_route_file(const char *file_path) {
     /* Check if parent directory is named "routes" */
     const char *dir_start = last_slash;
     while (dir_start > file_path && dir_start[-1] != '/') dir_start--;
-    if (dir_start == file_path) return false; /* no parent dir */
-    /* "routes" is exactly between two slashes */
+    /* "routes" directory — dir_start now points to the first char of the
+     * parent directory name, which may be at the root of the path */
     size_t dir_len = (size_t)(last_slash - dir_start);
     if (dir_len == 6 && strncmp(dir_start, "routes", 6) == 0) return true;
     return false;
@@ -316,6 +316,8 @@ int cbm_pipeline_pass_route_resolve(cbm_pipeline_ctx_t *ctx) {
             total_created += created;
         }
     }
+
+    (void)files_scanned; (void)route_file_count; /* used in log below */
 
     /* file_nodes is owned by gbuf — do NOT free */
     {
