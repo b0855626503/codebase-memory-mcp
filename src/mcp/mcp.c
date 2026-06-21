@@ -2257,9 +2257,10 @@ static char *handle_get_architecture(cbm_mcp_server_t *srv, const char *args) {
  * edge_types were found (caller must keep alive until types are consumed), or NULL. */
 static yyjson_doc *resolve_trace_edge_types(const char *args, const char *mode,
                                             const char **out_types, int *out_count) {
-    static const char *mode_calls[] = {"CALLS"};
-    static const char *mode_data_flow[] = {"CALLS", "DATA_FLOWS"};
-    static const char *mode_cross_svc[] = {"HTTP_CALLS", "ASYNC_CALLS", "DATA_FLOWS", "CALLS"};
+    static const char *mode_calls[] = {"CALLS", "ROUTES_TO", "HANDLES"};
+    static const char *mode_data_flow[] = {"CALLS", "ROUTES_TO", "HANDLES", "DATA_FLOWS"};
+    static const char *mode_cross_svc[] = {"HTTP_CALLS", "ASYNC_CALLS", "DATA_FLOWS",
+                                            "CALLS", "ROUTES_TO", "HANDLES"};
 
     *out_count = 0;
 
