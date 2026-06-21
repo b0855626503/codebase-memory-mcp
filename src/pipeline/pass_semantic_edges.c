@@ -909,6 +909,14 @@ static int phase1_scan_functions(cbm_gbuf_t *gbuf, cbm_sem_func_t **out_funcs,
             continue;
         }
         for (int i = 0; i < node_count; i++) {
+            /* Exclude test/vendor/migration nodes from semantic corpus.
+             * These pollute the vector index with noise (test_* methods,
+             * vendored code, migration helpers) and skew similarity scores. */
+            const char *fp = nodes[i]->file_path;
+            if (fp && (strstr(fp, "/tests/") || strncmp(fp, "tests/", 6) == 0 ||
+                       strstr(fp, "/vendor/") || strstr(fp, "migration"))) {
+                continue;
+            }
             if (func_count >= func_cap) {
                 int new_cap = func_cap < MAX_FUNCS_INIT ? MAX_FUNCS_INIT : func_cap * GROW;
                 cbm_sem_func_t *grown = realloc(funcs, (size_t)new_cap * sizeof(cbm_sem_func_t));
