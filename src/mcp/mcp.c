@@ -4695,8 +4695,9 @@ static char *handle_detect_dead_code(cbm_mcp_server_t *srv, const char *args) {
         " AND n.file_path NOT LIKE '%/vendor/%'"
         " AND n.file_path NOT LIKE '%migration%'"
         " /* exclude all Laravel migration methods — invoked by artisan migrate */"
-        " AND (n.name NOT LIKE 'test_%' OR n.file_path NOT LIKE '%/tests/%')"
-        " /* exclude PHPUnit test methods — invoked by PHPUnit runner via reflection */"
+        " AND n.file_path NOT LIKE 'tests/%'"
+        " AND n.file_path NOT LIKE '%/tests/%'"
+        " /* exclude test files — PHPUnit invokes via reflection, not CALLS */"
         " ORDER BY fan_in ASC,fan_out ASC,runtime_edges ASC LIMIT ?2";
     yyjson_mut_doc *doc=yyjson_mut_doc_new(NULL);
     yyjson_mut_val *root=yyjson_mut_obj(doc);yyjson_mut_doc_set_root(doc,root);
