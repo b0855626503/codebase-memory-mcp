@@ -2512,9 +2512,9 @@ int cbm_store_search(cbm_store_t *s, const cbm_search_params_t *params, cbm_sear
     const char *select_cols = "SELECT n.id, n.project, n.label, n.name, n.qualified_name, "
                               "n.file_path, n.start_line, n.end_line, n.properties, "
                               "(SELECT COUNT(*) FROM edges e WHERE e.target_id = n.id AND "
-                              "e.type IN ('CALLS', 'USAGE')) AS in_deg, "
+                              "e.type IN ('CALLS','ROUTES_TO','HANDLES','USAGE')) AS in_deg, "
                               "(SELECT COUNT(*) FROM edges e WHERE e.source_id = n.id AND "
-                              "e.type IN ('CALLS', 'USAGE')) AS out_deg ";
+                              "e.type IN ('CALLS','ROUTES_TO','HANDLES','USAGE')) AS out_deg ";
 
     char where[CBM_SZ_2K] = "";
     search_bind_t binds[ST_SEARCH_MAX_BINDS];
@@ -3475,7 +3475,8 @@ static int arch_routes(cbm_store_t *s, const char *project, cbm_architecture_inf
 
 static int arch_hotspots(cbm_store_t *s, const char *project, cbm_architecture_info_t *out) {
     const char *sql = "SELECT n.name, n.qualified_name, COUNT(*) as fan_in "
-                      "FROM nodes n JOIN edges e ON e.target_id = n.id AND e.type = 'CALLS' "
+                      "FROM nodes n JOIN edges e ON e.target_id = n.id "
+                      "AND e.type IN ('CALLS','ROUTES_TO','HANDLES') "
                       "WHERE n.project=?1 AND n.label IN ('Function', 'Method') "
                       "AND (json_extract(n.properties, '$.is_test') IS NULL OR "
                       "json_extract(n.properties, '$.is_test') != 1) "
