@@ -392,6 +392,37 @@ static int resolve_single_call(cbm_pipeline_ctx_t *ctx, CBMCall *call,
                 }
             }
         }
+        /* Simple $this->method() — same-class method call.
+         * Build target QN from enclosing class + bare method name (strip
+         * receiver prefix that extraction prepends to callee_name).
+         * This recovers intra-class calls that were blocked by the
+         * member-call guard below. */
+        if (call->receiver_expr && strcmp(call->receiver_expr, "$this") == 0) {
+            /* Strip receiver prefix from callee_name: "$this.b" → "b" */
+            const char *bare_method = call->callee_name;
+            const char *dot_in_name = strrchr(bare_method, '.');
+            if (dot_in_name) bare_method = dot_in_name + 1;
+            const char *last_dot3 = strrchr(call->enclosing_func_qn, '.');
+            if (last_dot3 && last_dot3 != call->enclosing_func_qn) {
+                size_t class_len2 = (size_t)(last_dot3 - call->enclosing_func_qn);
+                if (class_len2 < CBM_SZ_256) {
+                    char tgt_qn[CBM_SZ_512];
+                    snprintf(tgt_qn, sizeof(tgt_qn), "%.*s.%s",
+                             (int)class_len2, call->enclosing_func_qn, bare_method);
+                    const cbm_gbuf_node_t *tgt = cbm_gbuf_find_by_qn(ctx->gbuf, tgt_qn);
+                    if (tgt && source_node->id != tgt->id) {
+                        cbm_resolution_t self_res = {0};
+                        self_res.qualified_name = tgt->qualified_name;
+                        self_res.confidence = 0.95;
+                        self_res.strategy = "same_class_method";
+                        self_res.candidate_count = 1;
+                        emit_classified_edge(ctx, call, source_node, tgt, &self_res,
+                                             module_qn, imp_keys, imp_vals, imp_count);
+                        return SKIP_ONE;
+                    }
+                }
+            }
+        }
         /* Member call ($this->x(), $obj->y()) with receiver — the receiver was
          * stripped from callee_name at extraction time, so the registry only sees
          * a bare method name. Name-only matching cannot safely resolve member
