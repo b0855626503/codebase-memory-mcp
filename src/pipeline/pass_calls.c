@@ -420,6 +420,44 @@ static int resolve_single_call(cbm_pipeline_ctx_t *ctx, CBMCall *call,
                                              module_qn, imp_keys, imp_vals, imp_count);
                         return SKIP_ONE;
                     }
+                    /* QN-based lookup failed — may be a trait method calling a
+                     * class method (different QN prefix). Search for the target
+                     * by bare method name in the same directory tree, requiring
+                     * exactly one Method match to avoid false positives. */
+                    if (source_node->file_path && source_node->file_path[0]) {
+                        /* Derive directory prefix from source file: strip filename */
+                        char dir_prefix[CBM_SZ_512];
+                        snprintf(dir_prefix, sizeof(dir_prefix), "%s", source_node->file_path);
+                        char *sl = strrchr(dir_prefix, '/');
+                        if (sl) {
+                            *sl = '\0'; /* keep directory only */
+                            const cbm_gbuf_node_t **name_nodes = NULL;
+                            int name_count = 0;
+                            cbm_gbuf_find_by_name(ctx->gbuf, bare_method, &name_nodes, &name_count);
+                            const cbm_gbuf_node_t *found = NULL;
+                            int matches = 0;
+                            for (int fi = 0; fi < name_count; fi++) {
+                                const cbm_gbuf_node_t *n = name_nodes[fi];
+                                if (!n->label || strcmp(n->label, "Method") != 0) continue;
+                                if (!n->file_path) continue;
+                                if (n->id == source_node->id) continue;
+                                if (strncmp(n->file_path, dir_prefix, strlen(dir_prefix)) == 0) {
+                                    found = n;
+                                    matches++;
+                                }
+                            }
+                            if (matches == 1 && found) {
+                                cbm_resolution_t self_res = {0};
+                                self_res.qualified_name = found->qualified_name;
+                                self_res.confidence = 0.85;
+                                self_res.strategy = "same_dir_method";
+                                self_res.candidate_count = 1;
+                                emit_classified_edge(ctx, call, source_node, found, &self_res,
+                                                     module_qn, imp_keys, imp_vals, imp_count);
+                                return SKIP_ONE;
+                            }
+                        }
+                    }
                 }
             }
         }
