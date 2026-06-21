@@ -4674,8 +4674,10 @@ static char *handle_detect_dead_code(cbm_mcp_server_t *srv, const char *args) {
     sqlite3 *db=cbm_store_get_db(store);
     if(!db){free(project);return cbm_mcp_text_result("no db",true);}
     const char *sql="SELECT n.name,n.qualified_name,n.file_path,n.label,n.id,"
-        " (SELECT COUNT(*) FROM edges e WHERE e.target_id=n.id AND e.type='CALLS') AS fan_in,"
-        " (SELECT COUNT(*) FROM edges e WHERE e.source_id=n.id AND e.type='CALLS') AS fan_out,"
+        " (SELECT COUNT(*) FROM edges e WHERE e.target_id=n.id"
+        "  AND e.type IN ('CALLS','ROUTES_TO','HANDLES')) AS fan_in,"
+        " (SELECT COUNT(*) FROM edges e WHERE e.source_id=n.id"
+        "  AND e.type IN ('CALLS','ROUTES_TO','HANDLES')) AS fan_out,"
         " (SELECT COUNT(*) FROM edges e WHERE (e.source_id=n.id OR e.target_id=n.id) AND e.type='TESTS') AS test_edges,"
         " COALESCE(json_extract(n.properties,'$.is_entry_point'),0) AS is_entry,"
         " (SELECT COUNT(*) FROM edges e WHERE (e.source_id=n.id OR e.target_id=n.id) AND e.type='RUNTIME_CALLS') AS runtime_edges"
