@@ -281,12 +281,14 @@ int cbm_pipeline_pass_route_resolve(cbm_pipeline_ctx_t *ctx) {
         return 0;
     }
 
+    int route_file_count = 0;
     for (int i = 0; i < file_count; i++) {
         const cbm_gbuf_node_t *fn = file_nodes[i];
         if (!fn->file_path) continue;
 
         /* Only scan PHP route files */
         if (!is_route_file(fn->file_path)) continue;
+        route_file_count++;
 
         /* Build absolute path */
         char abs_path[CBM_SZ_4K];
@@ -317,10 +319,12 @@ int cbm_pipeline_pass_route_resolve(cbm_pipeline_ctx_t *ctx) {
 
     /* file_nodes is owned by gbuf — do NOT free */
     {
-        char ebuf[32], fbuf[32];
+        char ebuf[32], fbuf[32], rbuf[32];
         snprintf(ebuf, sizeof(ebuf), "%d", total_created);
         snprintf(fbuf, sizeof(fbuf), "%d", files_scanned);
-        cbm_log_info("pass_route_resolve.done", "edges", ebuf, "files", fbuf);
+        snprintf(rbuf, sizeof(rbuf), "%d", route_file_count);
+        cbm_log_info("pass_route_resolve.done", "edges", ebuf, "scanned", fbuf,
+                     "route_files", rbuf);
     }
     return total_created;
 }
