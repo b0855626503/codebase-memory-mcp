@@ -4063,15 +4063,26 @@ static void detect_add_impacted_symbols(cbm_store_t *store, const char *project,
 static char *handle_detect_changes(cbm_mcp_server_t *srv, const char *args) {
     char *project = cbm_mcp_get_string_arg(args, "project");
     char *base_branch = cbm_mcp_get_string_arg(args, "base_branch");
+    char *since = cbm_mcp_get_string_arg(args, "since");
     char *scope = cbm_mcp_get_string_arg(args, "scope");
     int depth = cbm_mcp_get_int_arg(args, "depth", MCP_DEFAULT_BFS_DEPTH);
 
     /* scope: "files" = just changed files, "symbols" = files + symbols (default) */
     bool want_symbols = !scope || strcmp(scope, "symbols") == 0 || strcmp(scope, "impact") == 0;
 
-    if (!base_branch) {
-        base_branch = heap_strdup("main");
+    /* 'since' takes precedence over 'base_branch'. If neither is set,
+     * default to 'HEAD~1' (most recent commit) so the tool has useful
+     * default behavior — comparing against 'main' returns nothing when
+     * already on the main branch. */
+    if (!base_branch && !since) {
+        base_branch = heap_strdup("HEAD~1");
     }
+    if (since && since[0]) {
+        free(base_branch);
+        base_branch = since;
+        since = NULL; /* ownership transferred */
+    }
+    free(since);
 
     /* Reject shell metacharacters in user-supplied branch name */
     if (!cbm_validate_shell_arg(base_branch)) {
