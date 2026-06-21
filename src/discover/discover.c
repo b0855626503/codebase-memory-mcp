@@ -44,7 +44,9 @@ static const char *ALWAYS_SKIP_DIRS[] = {
     /* Deploy */
     ".vercel", ".netlify",
     /* Misc */
-    ".qdrant_code_embeddings", ".tmp", "vendor", "vendored", NULL};
+    ".qdrant_code_embeddings", ".tmp", "vendor", "vendored",
+    /* Package build artifacts (Laravel/JS publishable assets contain bundled/minified code) */
+    "publishable", NULL};
 
 static const char *FAST_SKIP_DIRS[] = {
     "generated", "gen",           "auto-generated", "fixtures",     "testdata",    "test_data",
