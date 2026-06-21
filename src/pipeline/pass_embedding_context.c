@@ -38,6 +38,8 @@
  * Returns a pointer into qn or qn itself if no separator found.
  * E.g. "App.Services.WalletService" → "WalletService"
  *      "App\\Http\\Controllers\\DepositController" → "DepositController" */
+/* CLASS tag disabled — short_name no longer needed */
+static const char *short_name(const char *qn) __attribute__((unused));
 static const char *short_name(const char *qn) {
     if (!qn) return "?";
     const char *dot = strrchr(qn, '.');
@@ -109,22 +111,7 @@ static int build_context_for_node(cbm_gbuf_t *gbuf, const cbm_gbuf_node_t *node)
     pos += (size_t)snprintf(context + pos, sizeof(context) - pos,
                             "%s:%s", node->label, node->name ? node->name : "?");
 
-    /* 2. CLASS: parent_class from node properties */
-    if (node->properties_json) {
-        yyjson_doc *doc = yyjson_read(node->properties_json, strlen(node->properties_json), 0);
-        if (doc) {
-            yyjson_val *root = yyjson_doc_get_root(doc);
-            yyjson_val *pc = yyjson_obj_get(root, "parent_class");
-            if (pc) {
-                const char *pc_str = yyjson_get_str(pc);
-                if (pc_str && pc_str[0]) {
-                    pos += (size_t)snprintf(context + pos, sizeof(context) - pos,
-                                            " CLASS:%s", short_name(pc_str));
-                }
-            }
-            yyjson_doc_free(doc);
-        }
-    }
+    /* 2. CLASS: parent_class — disabled (over-weights same-class methods) */
 
     /* 3. CALLS: 1-hop outbound CALLS */
     {
