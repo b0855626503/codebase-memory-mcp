@@ -18,6 +18,7 @@ enum { CBM_DIR_PERMS = 0755, PL_RING = 4, PL_RING_MASK = 3, PL_SEQ_PASSES = 6, P
 #include "pipeline/artifact.h"
 #include "pipeline/pipeline_internal.h"
 #include "pipeline/pass_lsp_cross.h"
+#include "pipeline/pass_embedding_context.h"
 #include "pipeline/worker_pool.h"
 #include "graph_buffer/graph_buffer.h"
 #include "git/git_context.h"
@@ -537,6 +538,9 @@ static void predump_route_resolve(cbm_pipeline_ctx_t *ctx) {
 static void predump_blade(cbm_pipeline_ctx_t *ctx) {
     cbm_pipeline_pass_blade_calls(ctx);
 }
+static void predump_embed(cbm_pipeline_ctx_t *ctx) {
+    cbm_pipeline_pass_embedding_context(ctx);
+}
 static void run_predump_passes(cbm_pipeline_t *p, cbm_pipeline_ctx_t *ctx) {
     static const struct {
         predump_pass_fn fn;
@@ -546,10 +550,11 @@ static void run_predump_passes(cbm_pipeline_t *p, cbm_pipeline_ctx_t *ctx) {
         {predump_deco, "decorator_tags", false},   {predump_cfg, "configlink", false},
         {predump_route, "route_match", false},     {predump_route_resolve, "route_resolve", false},
         {predump_blade, "blade_calls", false},
+        {predump_embed, "embedding_context", false},
         {predump_sim, "similarity", true},         {predump_sem, "semantic_edges", true},
         {predump_complexity, "complexity", false},
     };
-    enum { PREDUMP_PASS_COUNT = 8 };
+    enum { PREDUMP_PASS_COUNT = 9 };
     struct timespec t;
     for (int i = 0; i < PREDUMP_PASS_COUNT && !check_cancel(p); i++) {
         /* "moderate_only" passes (similarity/semantic edges) run in FULL,

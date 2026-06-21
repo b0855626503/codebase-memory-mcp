@@ -390,7 +390,40 @@ static int tokenize_json_array_field(const char *json, const char *key, char **t
     return count;
 }
 
-/* Walk the CALLS edges rooted at n (either outbound or inbound depending on
+/* Tokenize the embedding_context.text field from node properties_json.
+ * The embedding_context is a JSON object stored by pass_embedding_context:
+ *   {"embedding_context":{"text":"Method:foo CLASS:Bar CALLS:baz CALLED_BY:qux"}}
+ * The text is space-separated and colons are delimiters, so cbm_sem_tokenize
+ * will split into meaningful tokens.  Falls through silently when absent. */
+static int tokenize_embedding_context(const char *json, char **tokens, int count, int max_tokens) {
+    if (count >= max_tokens || !json) {
+        return count;
+    }
+    const char *prefix = "\"embedding_context\":{\"text\":\"";
+    const char *start = strstr(json, prefix);
+    if (!start) {
+        return count;
+    }
+    start += strlen(prefix);
+    const char *end = strchr(start, '"');
+    if (!end) {
+        return count;
+    }
+    int len = (int)(end - start);
+    if (len <= 0) {
+        return count;
+    }
+    char buf[CBM_SZ_2K];
+    if (len >= (int)sizeof(buf)) {
+        len = (int)sizeof(buf) - SKIP_ONE;
+    }
+    memcpy(buf, start, (size_t)len);
+    buf[len] = '\0';
+    count += cbm_sem_tokenize(buf, tokens + count, max_tokens - count);
+    return count;
+}
+
+/* Walk the CALLS edges rooted at n(either outbound or inbound depending on
  * `outbound`) and tokenize the names of the target/source nodes.  Caller-side
  * caps via max_tokens and MAX_CALLEES. */
 static int tokenize_call_neighbors(const cbm_gbuf_node_t *n, const cbm_gbuf_t *gbuf, bool outbound,
@@ -439,6 +472,7 @@ static int tokenize_node(const cbm_gbuf_node_t *n, const cbm_gbuf_t *gbuf, char 
         count =
             tokenize_json_array_field(n->properties_json, "decorators", tokens, count, max_tokens);
         count = tokenize_json_string_field(n->properties_json, "bt", tokens, count, max_tokens);
+        count = tokenize_embedding_context(n->properties_json, tokens, count, max_tokens);
     }
     count = tokenize_call_neighbors(n, gbuf, /*outbound=*/true, tokens, count, max_tokens);
 
