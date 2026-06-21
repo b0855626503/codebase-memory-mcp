@@ -3475,16 +3475,26 @@ static int arch_routes(cbm_store_t *s, const char *project, cbm_architecture_inf
 
 static int arch_hotspots(cbm_store_t *s, const char *project, cbm_architecture_info_t *out) {
     const char *sql = "SELECT n.name, n.qualified_name, COUNT(*) as fan_in "
-                      "FROM nodes n JOIN edges e ON e.target_id = n.id "
-                      "AND e.type IN ('CALLS','ROUTES_TO','HANDLES') "
+                      "FROM nodes n "
+                      "JOIN edges e ON e.target_id = n.id "
+                      "  AND e.type IN ('CALLS','ROUTES_TO','HANDLES') "
+                      /* Exclude edges from test callers. */
+                      "  AND e.source_id NOT IN ("
+                      "    SELECT id FROM nodes "
+                      "    WHERE project=?1 AND label IN ('Function','Method') "
+                      "    AND (json_extract(properties,'$.is_test')=1 "
+                      "         OR file_path LIKE '%test%')) "
+                      /* Exclude unique_name resolution edges where source and
+                       * target are in different files. These are likely false
+                       * positives from global name matching on common method
+                       * names like now(), create(), config(). */
+                      "  AND NOT (json_extract(e.properties,'$.strategy')='unique_name'"
+                      "    AND (SELECT file_path FROM nodes WHERE id=e.source_id)"
+                      "     != n.file_path) "
                       "WHERE n.project=?1 AND n.label IN ('Function', 'Method') "
                       "AND (json_extract(n.properties, '$.is_test') IS NULL OR "
                       "json_extract(n.properties, '$.is_test') != 1) "
                       "AND n.file_path NOT LIKE '%test%' "
-                      /* Exclude global helper functions from hotspot analysis.
-                       * These are framework-style utilities (helpers.php, simple
-                       * wrappers) that naturally have high fan_in but are not
-                       * architectural god objects. */
                       "AND NOT (n.label = 'Function' AND n.file_path LIKE '%helper%') "
                       "GROUP BY n.id ORDER BY fan_in DESC LIMIT 10";
     sqlite3_stmt *stmt = NULL;
