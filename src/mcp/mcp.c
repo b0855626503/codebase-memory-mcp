@@ -1567,6 +1567,47 @@ static bool run_semantic_query(yyjson_mut_doc *doc, yyjson_mut_val *root, const 
         if (cbm_store_vector_search(store, project, keywords, ki, sem_limit, &vresults, &vcount) ==
                 CBM_STORE_OK &&
             vcount > 0) {
+            /* Graph re-rank bonus: for each result, query the node's
+             * embedding_context for CALLS/CALLED_BY names that match
+             * query keywords. Additive boost per match. Prototype. */
+            sqlite3 *db = cbm_store_get_db(store);
+            for (int v = 0; v < vcount; v++) {
+                double bonus = 0.0;
+                sqlite3_stmt *gs = NULL;
+                const char *gq = "SELECT properties FROM nodes WHERE id=?1";
+                if (db && sqlite3_prepare_v2(db, gq, -1, &gs, NULL) == SQLITE_OK) {
+                    sqlite3_bind_int64(gs, 1, vresults[v].node_id);
+                    if (sqlite3_step(gs) == SQLITE_ROW) {
+                        const char *props = (const char *)sqlite3_column_text(gs, 0);
+                        if (props) {
+                            const char *ectx = strstr(props, "\"embedding_context\"");
+                            if (ectx) {
+                                const char *txt = strstr(ectx, "\"text\":\"");
+                                if (txt) {
+                                    txt += 8; /* skip "text":" */
+                                    /* Check each keyword against the context text */
+                                    for (int kw = 0; kw < ki; kw++) {
+                                        if (strcasestr(txt, keywords[kw]))
+                                            bonus += 0.05;
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    sqlite3_finalize(gs);
+                }
+                vresults[v].score += bonus;
+            }
+            /* Re-sort by adjusted score (simple bubble — vcount is small, ≤80) */
+            for (int i = 0; i < vcount - 1; i++) {
+                for (int j = i + 1; j < vcount; j++) {
+                    if (vresults[j].score > vresults[i].score) {
+                        cbm_vector_result_t tmp = vresults[i];
+                        vresults[i] = vresults[j];
+                        vresults[j] = tmp;
+                    }
+                }
+            }
             emit_semantic_results(doc, root, vresults, vcount);
             cbm_store_free_vector_results(vresults, vcount);
         }
