@@ -935,61 +935,87 @@ cbm_resolution_t cbm_registry_resolve_member_call(const cbm_registry_t *r, const
         /* exact match — type_name is already a full QN */
         class_qn = type_name;
     } else {
-        /* type_name may be a package-relative path like
-         * "Gametech.Game.Repositories.GameTypeRepository". Extract the
-         * bare class name (last dot segment) and search by name, then
-         * filter candidates whose QN contains the type_name path.
-         * Comparison is case-insensitive because PHP namespaces use
-         * PascalCase but QN paths use lowercase. */
+        /* type_name may be a bare class name ("MemberRepository") or a
+         * package-relative path ("Gametech.Game.Repositories.GameTypeRepository").
+         * Extract the bare class name and search, then filter candidates.
+         * Comparison is case-insensitive (PHP namespaces use PascalCase
+         * but QN paths use lowercase). */
         const char *bare_class = strrchr(type_name, '.');
-        if (bare_class) {
-            bare_class++; /* skip the dot */
+        if (bare_class) bare_class++; else bare_class = type_name;
+        {
             const char **candidates2 = NULL;
             int cand2_count = 0;
             cbm_registry_find_by_name(r, bare_class, &candidates2, &cand2_count);
             /* Lowercase the type_name for case-insensitive matching */
             char type_lower[CBM_SZ_256];
-            size_t tnl = strlen(type_name);
+            size_t tnl = strlen(bare_class);
             if (tnl >= sizeof(type_lower)) tnl = sizeof(type_lower) - 1;
             for (size_t ti = 0; ti < tnl; ti++)
-                type_lower[ti] = (char)((type_name[ti] >= 'A' && type_name[ti] <= 'Z')
-                                       ? type_name[ti] + ('a' - 'A') : type_name[ti]);
+                type_lower[ti] = (char)((bare_class[ti] >= 'A' && bare_class[ti] <= 'Z')
+                                       ? bare_class[ti] + ('a' - 'A') : bare_class[ti]);
             type_lower[tnl] = '\0';
             const char *best = NULL;
             int best_matches = 0;
+            /* Match candidates whose QN contains the type_name path
+             * (case-insensitive). This handles both "Gametech.Lotto.Services.DrawService"
+             * and bare names like "DrawService" by checking the lowercased QN. */
             for (int ci = 0; ci < cand2_count; ci++) {
-                if (cbm_registry_label_of(r, candidates2[ci])) {
-                    /* Lowercase the QN for comparison */
-                    char qn_lower_ci[CBM_SZ_256];
-                    size_t ql = strlen(candidates2[ci]);
-                    if (ql >= sizeof(qn_lower_ci)) ql = sizeof(qn_lower_ci) - 1;
-                    for (size_t qi = 0; qi < ql; qi++)
-                        qn_lower_ci[qi] = (char)((candidates2[ci][qi] >= 'A' && candidates2[ci][qi] <= 'Z')
-                                                ? candidates2[ci][qi] + ('a' - 'A') : candidates2[ci][qi]);
-                    qn_lower_ci[ql] = '\0';
-                    if (strstr(qn_lower_ci, type_lower)) {
-                        best = candidates2[ci];
-                        best_matches++;
-                    }
+                if (!cbm_registry_label_of(r, candidates2[ci])) continue;
+                /* Lowercase the candidate QN for comparison */
+                char qn_lower_di[CBM_SZ_256];
+                size_t ql = strlen(candidates2[ci]);
+                if (ql >= sizeof(qn_lower_di)) ql = sizeof(qn_lower_di) - 1;
+                for (size_t qi = 0; qi < ql; qi++)
+                    qn_lower_di[qi] = (char)((candidates2[ci][qi] >= 'A' && candidates2[ci][qi] <= 'Z')
+                                           ? candidates2[ci][qi] + ('a' - 'A') : candidates2[ci][qi]);
+                qn_lower_di[ql] = '\0';
+                /* Build lowercased type_name for comparison */
+                char tn_lower[CBM_SZ_256];
+                size_t tl2 = strlen(type_name);
+                if (tl2 >= sizeof(tn_lower)) tl2 = sizeof(tn_lower) - 1;
+                for (size_t ti = 0; ti < tl2; ti++)
+                    tn_lower[ti] = (char)((type_name[ti] >= 'A' && type_name[ti] <= 'Z')
+                                         ? type_name[ti] + ('a' - 'A') : type_name[ti]);
+                tn_lower[tl2] = '\0';
+                if (strstr(qn_lower_di, tn_lower)) {
+                    best = candidates2[ci];
+                    best_matches++;
                 }
             }
-            if (best_matches == 1) {
-                class_qn = best;
-                goto member_call_class_resolved;
-            }
-            if (best_matches > 1) {
-                /* Prefer candidate whose QN shares prefix with caller */
-                for (int ci = 0; ci < cand2_count; ci++) {
-                    if (cbm_registry_label_of(r, candidates2[ci])) {
-                        size_t eq_len = strlen(enclosing_class_qn);
-                        if (strncmp(candidates2[ci], enclosing_class_qn, eq_len) == 0 &&
-                            candidates2[ci][eq_len] == '.') {
-                            class_qn = candidates2[ci];
-                            goto member_call_class_resolved;
+            if (best_matches == 0) {
+                /* Fallback: take first Class/Interface candidate in same
+                 * package prefix (first 3 dot-segments shared with caller) */
+                const char *pkg_dot = strstr(enclosing_class_qn, ".packages.");
+                if (!pkg_dot) pkg_dot = strchr(enclosing_class_qn, '.');
+                if (pkg_dot) {
+                    const char *pkg_start = pkg_dot + 1;
+                    /* Extract up to 3 dot segments as common prefix */
+                    const char *seg_end = pkg_start;
+                    int dots = 0;
+                    while (*seg_end && dots < 3) { if (*seg_end == '.') dots++; seg_end++; }
+                    size_t pfx_len = (size_t)(seg_end - pkg_start);
+                    for (int ci = 0; ci < cand2_count; ci++) {
+                        if (!cbm_registry_label_of(r, candidates2[ci])) continue;
+                        const char *cpkg = strstr(candidates2[ci], ".packages.");
+                        if (cpkg && strncmp(cpkg + 1, pkg_start, pfx_len) == 0) {
+                            best = candidates2[ci];
+                            best_matches = 1;
+                            break;
                         }
                     }
                 }
-                /* Fallback: first match */
+            }
+            if (best_matches == 0) {
+                /* Last fallback: take first Class/Interface candidate */
+                for (int ci = 0; ci < cand2_count; ci++) {
+                    if (cbm_registry_label_of(r, candidates2[ci])) {
+                        best = candidates2[ci];
+                        best_matches = 1;
+                        break;
+                    }
+                }
+            }
+            if (best_matches >= 1) {
                 class_qn = best;
                 goto member_call_class_resolved;
             }
