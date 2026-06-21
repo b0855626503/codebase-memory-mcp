@@ -316,7 +316,7 @@ int cbm_pipeline_pass_route_resolve(cbm_pipeline_ctx_t *ctx) {
         }
     }
 
-    free((void *)file_nodes);
+    /* file_nodes is owned by gbuf — do NOT free */
     {
         char ebuf[32], fbuf[32];
         snprintf(ebuf, sizeof(ebuf), "%d", total_created);
