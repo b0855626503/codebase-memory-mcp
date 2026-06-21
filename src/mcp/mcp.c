@@ -4693,6 +4693,8 @@ static char *handle_detect_dead_code(cbm_mcp_server_t *srv, const char *args) {
         " AND n.file_path NOT LIKE '%.chunk.%'"
         " AND n.file_path NOT LIKE '%.vendor.%'"
         " AND n.file_path NOT LIKE '%/vendor/%'"
+        " AND (n.name NOT IN ('up','down') OR n.file_path NOT LIKE '%migration%')"
+        " /* exclude Laravel migration up/down */"
         " ORDER BY fan_in ASC,fan_out ASC,runtime_edges ASC LIMIT ?2";
     yyjson_mut_doc *doc=yyjson_mut_doc_new(NULL);
     yyjson_mut_val *root=yyjson_mut_obj(doc);yyjson_mut_doc_set_root(doc,root);
