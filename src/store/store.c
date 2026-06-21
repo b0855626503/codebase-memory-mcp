@@ -3481,6 +3481,11 @@ static int arch_hotspots(cbm_store_t *s, const char *project, cbm_architecture_i
                       "AND (json_extract(n.properties, '$.is_test') IS NULL OR "
                       "json_extract(n.properties, '$.is_test') != 1) "
                       "AND n.file_path NOT LIKE '%test%' "
+                      /* Exclude global helper functions from hotspot analysis.
+                       * These are framework-style utilities (helpers.php, simple
+                       * wrappers) that naturally have high fan_in but are not
+                       * architectural god objects. */
+                      "AND NOT (n.label = 'Function' AND n.file_path LIKE '%helper%') "
                       "GROUP BY n.id ORDER BY fan_in DESC LIMIT 10";
     sqlite3_stmt *stmt = NULL;
     if (sqlite3_prepare_v2(s->db, sql, CBM_NOT_FOUND, &stmt, NULL) != SQLITE_OK) {
