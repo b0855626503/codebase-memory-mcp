@@ -442,6 +442,7 @@ int cbm_parallel_resolve(cbm_pipeline_ctx_t *ctx, const cbm_file_info_t *files, 
  * Re-targets these edges to Route nodes for cross-service traversal. */
 void cbm_pipeline_create_route_nodes(cbm_gbuf_t *gb);
 int cbm_pipeline_pass_route_resolve(cbm_pipeline_ctx_t *ctx);
+int cbm_pipeline_pass_blade_calls(cbm_pipeline_ctx_t *ctx);
 
 /* ── Pass function prototypes ────────────────────────────────────── */
 
