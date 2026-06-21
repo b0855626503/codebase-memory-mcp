@@ -935,9 +935,70 @@ cbm_resolution_t cbm_registry_resolve_member_call(const cbm_registry_t *r, const
         /* exact match — type_name is already a full QN */
         class_qn = type_name;
     } else {
+        /* type_name may be a package-relative path like
+         * "Gametech.Game.Repositories.GameTypeRepository". Extract the
+         * bare class name (last dot segment) and search by name, then
+         * filter candidates whose QN contains the type_name path.
+         * Comparison is case-insensitive because PHP namespaces use
+         * PascalCase but QN paths use lowercase. */
+        const char *bare_class = strrchr(type_name, '.');
+        if (bare_class) {
+            bare_class++; /* skip the dot */
+            const char **candidates2 = NULL;
+            int cand2_count = 0;
+            cbm_registry_find_by_name(r, bare_class, &candidates2, &cand2_count);
+            /* Lowercase the type_name for case-insensitive matching */
+            char type_lower[CBM_SZ_256];
+            size_t tnl = strlen(type_name);
+            if (tnl >= sizeof(type_lower)) tnl = sizeof(type_lower) - 1;
+            for (size_t ti = 0; ti < tnl; ti++)
+                type_lower[ti] = (char)((type_name[ti] >= 'A' && type_name[ti] <= 'Z')
+                                       ? type_name[ti] + ('a' - 'A') : type_name[ti]);
+            type_lower[tnl] = '\0';
+            const char *best = NULL;
+            int best_matches = 0;
+            for (int ci = 0; ci < cand2_count; ci++) {
+                if (cbm_registry_label_of(r, candidates2[ci])) {
+                    /* Lowercase the QN for comparison */
+                    char qn_lower_ci[CBM_SZ_256];
+                    size_t ql = strlen(candidates2[ci]);
+                    if (ql >= sizeof(qn_lower_ci)) ql = sizeof(qn_lower_ci) - 1;
+                    for (size_t qi = 0; qi < ql; qi++)
+                        qn_lower_ci[qi] = (char)((candidates2[ci][qi] >= 'A' && candidates2[ci][qi] <= 'Z')
+                                                ? candidates2[ci][qi] + ('a' - 'A') : candidates2[ci][qi]);
+                    qn_lower_ci[ql] = '\0';
+                    if (strstr(qn_lower_ci, type_lower)) {
+                        best = candidates2[ci];
+                        best_matches++;
+                    }
+                }
+            }
+            if (best_matches == 1) {
+                class_qn = best;
+                goto member_call_class_resolved;
+            }
+            if (best_matches > 1) {
+                /* Prefer candidate whose QN shares prefix with caller */
+                for (int ci = 0; ci < cand2_count; ci++) {
+                    if (cbm_registry_label_of(r, candidates2[ci])) {
+                        size_t eq_len = strlen(enclosing_class_qn);
+                        if (strncmp(candidates2[ci], enclosing_class_qn, eq_len) == 0 &&
+                            candidates2[ci][eq_len] == '.') {
+                            class_qn = candidates2[ci];
+                            goto member_call_class_resolved;
+                        }
+                    }
+                }
+                /* Fallback: first match */
+                class_qn = best;
+                goto member_call_class_resolved;
+            }
+        }
+
         /* Short name — use by-name lookup to find the class */
         const char **candidates = NULL;
         int cand_count = 0;
+        /* type_name may be just a bare class name here */
         cbm_registry_find_by_name(r, type_name, &candidates, &cand_count);
         if (cand_count == SKIP_ONE) {
             class_qn = candidates[0];
@@ -965,6 +1026,7 @@ cbm_resolution_t cbm_registry_resolve_member_call(const cbm_registry_t *r, const
             }
         }
     }
+member_call_class_resolved:
     if (!class_qn) {
         return empty_result();
     }
