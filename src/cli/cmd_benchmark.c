@@ -240,7 +240,7 @@ static int run_lexical_search(cbm_store_t *store, const char *project,
     char sql[BM_BUF_4K];
     snprintf(sql, sizeof(sql),
         "SELECT n.name, n.qualified_name, n.file_path, n.label, "
-        "  bm25(nodes_fts, %.1f, 0.75, 0.5, 0.3, 0.2, 0.2) as score "
+        "  bm25(nodes_fts, %.1f, 0.75, 1.0, 1.0, 0.5, 0.5, 1.5, 1.5) as score "
         "FROM nodes_fts f JOIN nodes n ON f.rowid = n.id "
         "WHERE nodes_fts MATCH ? "
         "  AND n.label IN ('Method','Function') "

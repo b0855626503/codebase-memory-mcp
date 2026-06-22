@@ -286,6 +286,7 @@ static int init_schema(cbm_store_t *s) {
         int fts_rc = sqlite3_exec(s->db,
                                   "CREATE VIRTUAL TABLE IF NOT EXISTS nodes_fts USING fts5("
                                   "  name, qualified_name, label, file_path,"
+                                  "  class_name, package_name,"
                                   "  content='',"
                                   "  tokenize='unicode61 remove_diacritics 2'"
                                   ");",

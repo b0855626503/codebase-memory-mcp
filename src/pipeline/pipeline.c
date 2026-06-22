@@ -931,17 +931,26 @@ static int dump_and_persist_hashes(cbm_pipeline_t *p, const cbm_file_info_t *fil
          * "Gametech.Wallet.Controllers" → "Gametech Wallet Controllers"
          * "packages/Gametech/Wallet/src/" → "packages Gametech Wallet src"
          * Falls back to un-tokenized if replace() is unavailable. */
+        /* Phase 5: QN/path tokenization with class_name + package_name columns.
+         * class_name: camelCase-split method name
+         * package_name: tokenized QN (class/package segments) */
         if (cbm_store_exec(hash_store,
-                           "INSERT INTO nodes_fts(rowid, name, qualified_name, label, file_path) "
+                           "INSERT INTO nodes_fts(rowid, name, qualified_name, label, file_path, "
+                           "  class_name, package_name) "
                            "SELECT id, cbm_camel_split(name), "
-                           "  replace(replace(qualified_name, '.', ' '), '-', '-'), "
+                           "  replace(qualified_name, '.', ' '), "
                            "  label, "
-                           "  replace(file_path, '/', ' ') "
+                           "  replace(file_path, '/', ' '), "
+                           "  cbm_camel_split(name), "
+                           "  replace(qualified_name, '.', ' ') "
                            "FROM nodes;") != CBM_STORE_OK) {
             cbm_store_exec(hash_store,
-                           "INSERT INTO nodes_fts(rowid, name, qualified_name, label, file_path) "
+                           "INSERT INTO nodes_fts(rowid, name, qualified_name, label, file_path, "
+                           "  class_name, package_name) "
                            "SELECT id, cbm_camel_split(name), qualified_name, label, "
-                           "  replace(file_path, '/', ' ') FROM nodes;");
+                           "  replace(file_path, '/', ' '), "
+                           "  cbm_camel_split(name), "
+                           "  replace(qualified_name, '.', ' ') FROM nodes;");
         }
 
         cbm_store_close(hash_store);
