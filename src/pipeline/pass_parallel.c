@@ -1812,7 +1812,46 @@ static void resolve_file_calls(resolve_ctx_t *rc, resolve_worker_state_t *ws, CB
                 res.candidate_count = 1;
                 ws->lsp_overrides++;
             }
-        } else {
+        } else if (call->first_string_arg && call->first_string_arg[0] &&
+                   (strcmp(call->callee_name, "app") == 0 ||
+                    strcmp(call->callee_name, "resolve") == 0 ||
+                    strcmp(call->callee_name, "make") == 0)) {
+            /* Sprint N: Container resolution.
+             * app('Gametech\\Payment\\Repositories\\BillRepository')->create(...)
+             *   → callee_name = "app"
+             *   → first_string_arg = "Gametech\\Payment\\Repositories\\BillRepository"
+             *   → Look up BillRepository in registry → create CALLS edge to that class */
+            const char *class_str = call->first_string_arg;
+            /* Strip leading backslash if present */
+            if (class_str[0] == '\\') class_str++;
+            /* Try registry lookup by bare class name (last segment) */
+            const char *bare = strrchr(class_str, '\\');
+            if (bare) bare++; else bare = class_str;
+            const char **cands = NULL;
+            int cand_count = 0;
+            cbm_registry_find_by_name(rc->registry, bare, &cands, &cand_count);
+            if (cand_count > 0) {
+                /* Find Class/Interface candidate matching the full namespace */
+                for (int ci = 0; ci < cand_count; ci++) {
+                    const char *label = cbm_registry_label_of(rc->registry, cands[ci]);
+                    if (!label || (strcmp(label, "Class") != 0 && strcmp(label, "Interface") != 0))
+                        continue;
+                    /* Match: candidate QN should contain the class_str */
+                    if (strstr(cands[ci], bare)) {
+                        res.qualified_name = cands[ci];
+                        res.strategy = "container_resolve";
+                        res.confidence = 0.85;
+                        res.candidate_count = 1;
+                        ws->lsp_overrides++; /* count as resolved */
+                        break;
+                    }
+                }
+            }
+            if (!res.qualified_name || res.qualified_name[0] == '\0') {
+                /* Fall through: let it resolve to 'app' helper as before */
+            }
+        }
+        if (!res.qualified_name || res.qualified_name[0] == '\0') {
             /* Constructor-injection resolution: $this->property->method().
              * Derive enclosing class QN from the function QN, then look up
              * the property's type via class Field definitions in the gbuf. */
