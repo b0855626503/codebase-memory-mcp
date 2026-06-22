@@ -238,16 +238,19 @@ static int run_lexical_search(cbm_store_t *store, const char *project,
 
     /* FTS5 BM25 with label filter + weight */
     char sql[BM_BUF_4K];
+    /* Production-equivalent: bm25(nodes_fts) uses SQLite FTS5 defaults
+     * (k1≈1.2 internally). Column weights applied as post-filter label weight. */
+    (void)k1; /* k1 parameter kept for API compatibility */
     snprintf(sql, sizeof(sql),
         "SELECT n.name, n.qualified_name, n.file_path, n.label, "
-        "  bm25(nodes_fts, %.1f, 0.75, 1.0, 1.0, 0.5, 0.5, 1.5, 1.5) as score "
+        "  bm25(nodes_fts) as score "
         "FROM nodes_fts f JOIN nodes n ON f.rowid = n.id "
         "WHERE nodes_fts MATCH ? "
         "  AND n.label IN ('Method','Function') "
         "  AND n.file_path LIKE '%%.php' "
         "  AND n.qualified_name NOT LIKE '%%test%%' "
         "  AND n.qualified_name NOT LIKE '%%Test%%' "
-        "ORDER BY score LIMIT ?", k1);
+        "ORDER BY score LIMIT ?");
 
     sqlite3_stmt *stmt = NULL;
     if (sqlite3_prepare_v2(db, sql, -1, &stmt, NULL) != SQLITE_OK) return -1;

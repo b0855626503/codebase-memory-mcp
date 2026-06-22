@@ -37,36 +37,40 @@ remains available for SIMILAR_TO edges but is not suitable for precise code sear
 
 ### Key Findings
 
-1. **k1=0.0 was a critical bug**: The default BM25 configuration disabled term frequency
-   saturation (k1=0.0, b=1.0). Changing to standard parameters (k1=1.2, b=0.75)
-   produced a 3.3× improvement in Recall@10 (0.10 → 0.33). This was the single
-   highest-impact change in the entire evaluation.
+1. **QN/path tokenization is the single biggest lever**: qualified_name (dotted paths) and
+   file_path (slash paths) were stored as single FTS5 tokens. "Wallet" returned 0 FTS5
+   matches despite being in thousands of QNs. After splitting on `.` and `/`, "Wallet" =
+   2,816 matches, "HistoryController" = 21. This architectural fix alone enabled FTS5 to
+   search by package/class/directory tokens for the first time.
 
-2. **QN/path tokenization is essential**: qualified_name (dotted paths) and file_path
-   (slash paths) were stored as single FTS5 tokens. "Wallet" returned 0 FTS5 matches
-   despite being in thousands of QNs. After splitting on `.` and `/`, "Wallet" = 2,816
-   matches, "HistoryController" = 21.
+2. **Production BM25 was correct all along**: The production search (`mcp.c:1386`) uses
+   `bm25(nodes_fts)` with SQLite FTS5 defaults (k1≈1.2 internally). The benchmark tool
+   initially hardcoded `bm25(nodes_fts, 0.0, 1.0, 0.5)` (k1=0 disabling TF saturation),
+   making FTS5 appear worse than it actually was. This was a benchmark harness bug, not
+   a production issue. (Fixed in `562fb53`.)
 
 3. **Graph signals (CALLS) do not improve retrieval**: Despite 2,501 new business CALLS
    edges (77% resolve rate, zero false positives), Recall@10 remained at 0.0333.
-   Graph context helps structural analysis (trace_path, dead_code) but not semantic
-   search — the retrieval layer was the bottleneck, not graph quality.
+   Graph context helps structural analysis (trace_path, dead_code) but not lexical
+   search — the indexing layer was the bottleneck, not graph quality.
 
-4. **Random Indexing was NOT the primary bottleneck**: After k1 fix + QN tokenization,
-   Recall@10 reached 0.367 without changing the embedding model. The bottleneck was
-   in the lexical/indexing layer (BM25 config, tokenization, document structure).
+4. **Random Indexing was NOT the primary bottleneck**: After QN tokenization + structured
+   fields, Recall@10 reached 0.367 without changing the embedding model. The bottleneck
+   was in the lexical/indexing layer (document tokenization, FTS5 schema).
 
-5. **Vocabulary bridge shows diminishing returns after k1 fix**: Adding QN/NS/TOKENS
-   to documents was critical when ranking was broken, but after k1=1.2 the contribution
-   of additional vocabulary enrichment is smaller than proper BM25 configuration.
+5. **Structured FTS5 fields (class_name + package_name) are real gains**: Separating
+   class and package tokens into dedicated FTS5 columns enables field-level BM25 weighting
+   in future iterations. Combined with QN tokenization, this raised the ceiling from
+   11 to 12 retrievable queries.
 
-### The Real Bottleneck: Lexical Layer, Not Embedding
+### Revised Conclusion
 
-The original hypothesis ("random indexing is the problem") was disproven by achieving
-11× improvement purely through FTS5 configuration and document structure. The remaining
-19/30 queries that fail are evenly split between:
-- Retrievable with better ranking (GROUP A: 11 queries, rank 11-500)
-- Not retrievable by FTS5 (GROUP B: 8 queries, rank >500 — need structured documents)
+The original hypothesis ("random indexing is the problem") was partially disproven:
+- 11× improvement came from fixing the **lexical/indexing layer** (QN tokenization,
+  structured FTS5, benchmark correctness)
+- The embedding model was not the primary bottleneck
+- Production BM25 was already functioning correctly
+- The benchmark harness had a critical configuration bug (k1=0)
 
 ## Consequences
 
