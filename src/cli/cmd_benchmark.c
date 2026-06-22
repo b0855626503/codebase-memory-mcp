@@ -175,6 +175,7 @@ typedef struct {
  * Queries FTS5 directly, applies label weighting, returns vector_result_t. */
 static int run_lexical_search(cbm_store_t *store, const char *project,
                                const char *query_text, int limit,
+                               double k1,
                                cbm_vector_result_t **out, int *out_count) {
     sqlite3 *db = cbm_store_get_db(store);
     if (!db) return -1;
@@ -239,14 +240,14 @@ static int run_lexical_search(cbm_store_t *store, const char *project,
     char sql[BM_BUF_4K];
     snprintf(sql, sizeof(sql),
         "SELECT n.name, n.qualified_name, n.file_path, n.label, "
-        "  bm25(nodes_fts, 0.0, 1.0, 0.5) as score "
+        "  bm25(nodes_fts, %.1f, 0.75, 0.5, 0.3, 0.2, 0.2) as score "
         "FROM nodes_fts f JOIN nodes n ON f.rowid = n.id "
         "WHERE nodes_fts MATCH ? "
         "  AND n.label IN ('Method','Function') "
         "  AND n.file_path LIKE '%%.php' "
         "  AND n.qualified_name NOT LIKE '%%test%%' "
         "  AND n.qualified_name NOT LIKE '%%Test%%' "
-        "ORDER BY score LIMIT ?");
+        "ORDER BY score LIMIT ?", k1);
 
     sqlite3_stmt *stmt = NULL;
     if (sqlite3_prepare_v2(db, sql, -1, &stmt, NULL) != SQLITE_OK) return -1;
@@ -334,7 +335,7 @@ static int run_lexical_search(cbm_store_t *store, const char *project,
  * weights: multiply score by category weight before ranking */
 static int run_one_query_ex(cbm_store_t *store, const char *project,
                          const bm_query_t *q, bm_metrics_t *out,
-                         bool filter_model, bool search_lexical,
+                         bool filter_model, bool search_lexical, double bm25_k1,
                          double w_ctrl, double w_svc, double w_repo, double w_model) {
     /* Tokenize query */
     char qbuf[BM_BUF_1K];
@@ -352,7 +353,7 @@ static int run_one_query_ex(cbm_store_t *store, const char *project,
     int rc;
     if (search_lexical) {
         rc = run_lexical_search(store, project, q->query_text,
-                                 BM_MAX_RESULTS, &results, &result_count);
+                                 BM_MAX_RESULTS, bm25_k1, &results, &result_count);
     } else {
         rc = cbm_store_vector_search(store, project, keywords, kw_count,
                                       BM_MAX_RESULTS, &results, &result_count);
@@ -457,7 +458,7 @@ static int run_one_query_ex(cbm_store_t *store, const char *project,
 __attribute__((unused))
 static int run_one_query(cbm_store_t *store, const char *project,
                          const bm_query_t *q, bm_metrics_t *out) {
-    return run_one_query_ex(store, project, q, out, false, false, 1.0, 1.0, 1.0, 1.0);
+    return run_one_query_ex(store, project, q, out, false, false, 0.0, 1.0, 1.0, 1.0, 1.0);
 }
 
 /* ── Manifest loading ───────────────────────────────────────────── */
@@ -667,6 +668,7 @@ int cbm_cmd_benchmark(int argc, char **argv) {
     bool verbose = false;
     bool filter_model = false;
     bool search_lexical = false;
+    double bm25_k1 = 1.2;  /* standard BM25 — proven 3.3× better than 0.0 */
     double weight_controller = 1.0;
     double weight_service = 1.0;
     double weight_repository = 1.0;
@@ -694,6 +696,8 @@ int cbm_cmd_benchmark(int argc, char **argv) {
             weight_repository = atof(argv[++i]);
         } else if (strcmp(argv[i], "--weight-model") == 0 && i + 1 < argc) {
             weight_model = atof(argv[++i]);
+        } else if (strcmp(argv[i], "--k1") == 0 && i + 1 < argc) {
+            bm25_k1 = atof(argv[++i]);
         } else if (argv[i][0] != '-' && !manifest_path) {
             manifest_path = argv[i];
         }
@@ -754,7 +758,10 @@ int cbm_cmd_benchmark(int argc, char **argv) {
     printf("Config: %s [%s]\n",
            ec->profile[0] ? ec->profile : "defaults",
            ec->enabled ? "enabled" : "disabled");
-    printf("Search: %s\n", search_lexical ? "lexical (FTS5 BM25 + label weight)" : "semantic (vector)");
+    printf("Search: %s",
+           search_lexical ? "lexical (FTS5 BM25 + label weight)" : "semantic (vector)");
+    if (search_lexical) printf(" k1=%.1f", bm25_k1);
+    printf("\n");
     if (filter_model || weight_model != 1.0 || weight_controller != 1.0 ||
         weight_service != 1.0 || weight_repository != 1.0) {
         printf("Post-filter:");
@@ -780,7 +787,7 @@ int cbm_cmd_benchmark(int argc, char **argv) {
 
     for (int i = 0; i < query_count; i++) {
         if (run_one_query_ex(store, project_name, &queries[i], &per_query[i],
-                              filter_model, search_lexical,
+                              filter_model, search_lexical, bm25_k1,
                               weight_controller, weight_service,
                               weight_repository, weight_model) != 0) {
             printf("  [%d] \"%s\" → ERROR\n", i + 1, queries[i].query_text);

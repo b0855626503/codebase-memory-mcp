@@ -926,13 +926,22 @@ static int dump_and_persist_hashes(cbm_pipeline_t *p, const cbm_file_info_t *fil
          * Falls back to plain names if cbm_camel_split is unavailable (which
          * shouldn't happen because we always register it, but we stay defensive). */
         cbm_store_exec(hash_store, "INSERT INTO nodes_fts(nodes_fts) VALUES('delete-all');");
+        /* Phase 4A QN/Path tokenization: split qualified_name on '.' and
+         * file_path on '/' so FTS5 can search by package/class/directory tokens.
+         * "Gametech.Wallet.Controllers" → "Gametech Wallet Controllers"
+         * "packages/Gametech/Wallet/src/" → "packages Gametech Wallet src"
+         * Falls back to un-tokenized if replace() is unavailable. */
         if (cbm_store_exec(hash_store,
                            "INSERT INTO nodes_fts(rowid, name, qualified_name, label, file_path) "
-                           "SELECT id, cbm_camel_split(name), qualified_name, label, file_path "
+                           "SELECT id, cbm_camel_split(name), "
+                           "  replace(replace(qualified_name, '.', ' '), '-', '-'), "
+                           "  label, "
+                           "  replace(file_path, '/', ' ') "
                            "FROM nodes;") != CBM_STORE_OK) {
             cbm_store_exec(hash_store,
                            "INSERT INTO nodes_fts(rowid, name, qualified_name, label, file_path) "
-                           "SELECT id, name, qualified_name, label, file_path FROM nodes;");
+                           "SELECT id, cbm_camel_split(name), qualified_name, label, "
+                           "  replace(file_path, '/', ' ') FROM nodes;");
         }
 
         cbm_store_close(hash_store);
