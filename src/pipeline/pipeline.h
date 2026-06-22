@@ -160,6 +160,16 @@ cbm_resolution_t cbm_registry_resolve_member_call(const cbm_registry_t *r, const
                                                    const char *method_name,
                                                    const char *enclosing_class_qn);
 
+/* Sprint L: resolve $this->field->method() by property-name heuristic.
+ * Does NOT require Field nodes or gbuf — only the registry. Derives the
+ * target class name from the property name (memberRepository → MemberRepository),
+ * looks it up in the registry, then searches for the method. Whitelist-gated
+ * to business-signal suffixes (Repository, Service, Manager, etc.).
+ * Returns resolution with strategy="field_type_heuristic" on success. */
+cbm_resolution_t cbm_registry_resolve_by_property(const cbm_registry_t *r,
+                                                   const char *receiver_expr,
+                                                   const char *method_name);
+
 /* Per-file memoization cache for is_import_reachable. Thread-local —
  * each resolve worker owns its own cache. Call _begin at the start
  * of resolve_file_calls (or any per-file resolve loop) and _end at

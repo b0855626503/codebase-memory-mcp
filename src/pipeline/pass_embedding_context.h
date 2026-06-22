@@ -5,14 +5,19 @@
  * with graph context tokens stored in a node property `embedding_context`.
  * Runs after route_resolve but before semantic_edges.
  *
- * Context tokens:
- *   CLASS:<parent_class_short_name>      — from parent_class property
- *   CALLS:<callee_names>                  — 1-hop outbound CALLS edges
- *   CALLED_BY:<caller_names>             — 1-hop inbound CALLS+ROUTES_TO edges
- *   ROUTE:<method>:<path>                 — from inbound ROUTES_TO route node
- *   INHERITS:<parent_class_names>         — from INHERITS edges
+ * Context signals are configurable via .codebase-memory.json:
  *
- * Depth: 1 only, LIMIT 10 names per direction.
+ *   embedding.context.label        — "Method:deposit" prefix
+ *   embedding.context.calls        — "CALLS:<callee_names>" 1-hop outbound
+ *   embedding.context.called_by    — "CALLED_BY:<caller_names>" 1-hop inbound
+ *   embedding.context.routes_to    — "ROUTE:<method>:<path>" first inbound
+ *   embedding.context.inherits     — "INHERITS:<parent_names>" outbound
+ *   embedding.context.parent_class — "CLASS:<short_name>" (default OFF)
+ *
+ *   embedding.limits.max_names_per_direction — default 10
+ *   embedding.enabled              — set false to skip pass entirely
+ *
+ * When no config is present, defaults match the legacy hardcoded behaviour.
  */
 #ifndef CBM_PASS_EMBEDDING_CONTEXT_H
 #define CBM_PASS_EMBEDDING_CONTEXT_H

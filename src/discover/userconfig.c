@@ -36,6 +36,26 @@ const cbm_userconfig_t *cbm_get_user_lang_config(void) {
     return g_userconfig;
 }
 
+/* Forward declarations for embedding config helpers (defined below). */
+static void init_embedding_defaults(cbm_embedding_config_t *ec);
+static int  parse_embedding_section(yyjson_val *root, cbm_embedding_config_t *ec,
+                                    const char *source_label);
+
+const cbm_embedding_config_t *cbm_embedding_config_get(void) {
+    static cbm_embedding_config_t fallback;
+    static bool fallback_init = false;
+    if (!fallback_init) {
+        init_embedding_defaults(&fallback);
+        fallback_init = true;
+    }
+    /* No userconfig loaded → use defaults (backward compatible). */
+    if (!g_userconfig) {
+        return &fallback;
+    }
+    /* Userconfig loaded → return real config; consumer checks enabled flag. */
+    return &g_userconfig->embedding;
+}
+
 /* ── Language name → enum table ──────────────────────────────────── */
 
 /*
@@ -226,11 +246,14 @@ static int parse_extra_extensions(yyjson_val *root, cbm_userext_t **entries, int
 }
 
 /*
- * Read a JSON file and parse extra_extensions from it.
+ * Read a JSON file and parse extra_extensions + embedding from it.
  * Silently ignores missing files. Logs warnings for corrupt JSON.
+ * ec may be NULL (caller doesn't want embedding config).
+ * version_out receives the "version" field (0 if absent/unreadable).
  * Returns 0 on success (or absent file), -1 on alloc failure.
  */
-static int load_config_file(const char *path, cbm_userext_t **entries, int *count) {
+static int load_config_file(const char *path, cbm_userext_t **entries, int *count,
+                            cbm_embedding_config_t *ec, int *version_out) {
     FILE *f = fopen(path, "rb");
     if (!f) {
         return 0; /* file absent — silently ignore */
@@ -276,9 +299,163 @@ static int load_config_file(const char *path, cbm_userext_t **entries, int *coun
     }
 
     yyjson_val *root = yyjson_doc_get_root(doc);
+
+    /* Parse top-level version (0 if absent). */
+    if (version_out) {
+        yyjson_val *ver = yyjson_obj_get(root, "version");
+        if (ver && yyjson_is_int(ver)) {
+            int v = yyjson_get_int(ver);
+            if (v >= 0) *version_out = v;
+        }
+    }
+
     int rc = parse_extra_extensions(root, entries, count, path);
+    if (rc == 0 && ec) {
+        rc = parse_embedding_section(root, ec, path);
+    }
     yyjson_doc_free(doc);
     return rc;
+}
+
+/* ── Embedding config parsing ────────────────────────────────────── */
+
+/* Benchmark profile → signal preset lookup. */
+typedef struct {
+    const char *name;
+    bool calls;
+    bool called_by;
+    bool routes_to;
+    bool inherits;
+} embedding_profile_t;
+
+static const embedding_profile_t EMBEDDING_PROFILES[] = {
+    {"semantic_only",  false, false, false, false},
+    {"graph_light",    true,  false, false, false},
+    {"graph_balanced", true,  true,  false, false},
+    {"graph_full",     true,  true,  true,  true},
+};
+#define EMBEDDING_PROFILE_COUNT \
+    (sizeof(EMBEDDING_PROFILES) / sizeof(EMBEDDING_PROFILES[0]))
+
+/*
+ * Apply a named profile to the signal toggles.
+ * Only graph signals are affected — label/parent_class/limits
+ * are left alone so they can be set independently via context.*.
+ * Returns true if the profile was found and applied.
+ */
+static bool apply_profile(cbm_embedding_config_t *ec, const char *name) {
+    if (!name || !name[0]) return false;
+    for (size_t i = 0; i < EMBEDDING_PROFILE_COUNT; i++) {
+        if (strcmp(EMBEDDING_PROFILES[i].name, name) == 0) {
+            ec->signals.calls     = EMBEDDING_PROFILES[i].calls;
+            ec->signals.called_by = EMBEDDING_PROFILES[i].called_by;
+            ec->signals.routes_to = EMBEDDING_PROFILES[i].routes_to;
+            ec->signals.inherits  = EMBEDDING_PROFILES[i].inherits;
+            return true;
+        }
+    }
+    return false;
+}
+
+/*
+ * Initialise an embedding config struct with safe defaults.
+ * Mirror of the public cbm_embedding_config_defaults().
+ */
+static void init_embedding_defaults(cbm_embedding_config_t *ec) {
+    ec->enabled = true;
+    ec->profile[0] = '\0'; /* no profile → explicit signals used */
+    ec->signals.label = true;
+    ec->signals.calls = true;
+    ec->signals.called_by = true;
+    ec->signals.routes_to = true;
+    ec->signals.inherits = true;
+    ec->signals.parent_class = false; /* collapses same-class methods */
+    ec->signals.qualified_name = true;  /* domain vocabulary from QN */
+    ec->signals.namespace_ = true;      /* package/module structure */
+    ec->signals.file_path = false;       /* off by default — noisy */
+    ec->signals.identifier_tokens = true; /* camelCase → tokens */
+    ec->limits.max_names_per_direction = 10;
+}
+
+void cbm_embedding_config_defaults(cbm_embedding_config_t *ec) {
+    if (ec) init_embedding_defaults(ec);
+}
+
+/*
+ * Overlay embedding config from a JSON "embedding" key onto *ec.
+ * Only sets fields that are present in the JSON — absent keys leave
+ * the current value untouched (so project overlays on global).
+ * Returns 0 on success or absent key, -1 on malformed JSON.
+ */
+static int parse_embedding_section(yyjson_val *root, cbm_embedding_config_t *ec,
+                                    const char *source_label) {
+    if (!yyjson_is_obj(root)) return 0;
+
+    yyjson_val *emb = yyjson_obj_get(root, "embedding");
+    if (!emb) return 0; /* key absent — fine */
+    if (!yyjson_is_obj(emb)) {
+        cbm_log_warn("userconfig.bad_embedding", "file", source_label);
+        return 0;
+    }
+
+    /* top-level "enabled" */
+    yyjson_val *en = yyjson_obj_get(emb, "enabled");
+    if (en && yyjson_is_bool(en)) {
+        ec->enabled = yyjson_get_bool(en);
+    }
+
+    /* "profile" — apply BEFORE context.* so individual fields win.
+     * Store the profile name even if we also have context overrides. */
+    yyjson_val *prof = yyjson_obj_get(emb, "profile");
+    if (prof && yyjson_is_str(prof)) {
+        const char *pname = yyjson_get_str(prof);
+        if (pname && pname[0]) {
+            if (apply_profile(ec, pname)) {
+                snprintf(ec->profile, sizeof(ec->profile), "%s", pname);
+            } else {
+                cbm_log_warn("userconfig.unknown_profile", "file", source_label,
+                             "profile", pname);
+            }
+        }
+    }
+
+    /* "context" sub-object — overlays on top of profile defaults */
+    yyjson_val *ctx = yyjson_obj_get(emb, "context");
+    if (ctx && yyjson_is_obj(ctx)) {
+        #define OVERLAY_BOOL(keyname, field) do { \
+            yyjson_val *v_##field = yyjson_obj_get(ctx, keyname); \
+            if (v_##field && yyjson_is_bool(v_##field)) { \
+                ec->signals.field = yyjson_get_bool(v_##field); \
+            } \
+        } while(0)
+
+        OVERLAY_BOOL("label",          label);
+        OVERLAY_BOOL("calls",          calls);
+        OVERLAY_BOOL("called_by",      called_by);
+        OVERLAY_BOOL("routes_to",      routes_to);
+        OVERLAY_BOOL("inherits",       inherits);
+        OVERLAY_BOOL("parent_class",   parent_class);
+        OVERLAY_BOOL("qualified_name", qualified_name);
+        OVERLAY_BOOL("namespace",      namespace_);
+        OVERLAY_BOOL("file_path",         file_path);
+        OVERLAY_BOOL("identifier_tokens", identifier_tokens);
+
+        #undef OVERLAY_BOOL
+    }
+
+    /* "limits" sub-object */
+    yyjson_val *lim = yyjson_obj_get(emb, "limits");
+    if (lim && yyjson_is_obj(lim)) {
+        yyjson_val *v_max = yyjson_obj_get(lim, "max_names_per_direction");
+        if (v_max && yyjson_is_int(v_max)) {
+            int val = yyjson_get_int(v_max);
+            if (val >= 0 && val <= 100) {
+                ec->limits.max_names_per_direction = val;
+            }
+        }
+    }
+
+    return 0;
 }
 
 /* ── Public API ──────────────────────────────────────────────────── */
@@ -288,6 +465,10 @@ cbm_userconfig_t *cbm_userconfig_load(const char *repo_path) {
     if (!cfg) {
         return NULL;
     }
+
+    /* Initialise embedding config with defaults so that missing keys
+     * in both global and project configs still produce valid behaviour. */
+    init_embedding_defaults(&cfg->embedding);
 
     cbm_userext_t *entries = NULL;
     int count = 0;
@@ -299,7 +480,7 @@ cbm_userconfig_t *cbm_userconfig_load(const char *repo_path) {
     char global_path[PATH_BUF_SZ];
     snprintf(global_path, sizeof(global_path), "%s/codebase-memory-mcp/config.json", cfg_fallback);
 
-    if (load_config_file(global_path, &entries, &count) != 0) {
+    if (load_config_file(global_path, &entries, &count, &cfg->embedding, &cfg->version) != 0) {
         for (int i = 0; i < count; i++) {
             free(entries[i].ext);
         }
@@ -315,7 +496,7 @@ cbm_userconfig_t *cbm_userconfig_load(const char *repo_path) {
         char project_path[PATH_BUF_SZ];
         snprintf(project_path, sizeof(project_path), "%s/.codebase-memory.json", repo_path);
 
-        if (load_config_file(project_path, &entries, &count) != 0) {
+        if (load_config_file(project_path, &entries, &count, &cfg->embedding, &cfg->version) != 0) {
             /* Free already-allocated entries */
             for (int i = 0; i < count; i++) {
                 free(entries[i].ext);
@@ -360,6 +541,22 @@ cbm_userconfig_t *cbm_userconfig_load(const char *repo_path) {
 
     cfg->entries = entries;
     cfg->count = count;
+
+    /* ── Step 4: Version check ── */
+    if (cfg->version == 0) {
+        /* Unversioned config — treat as current. No migration needed
+         * since v1 is the first versioned schema. */
+        cfg->version = CBM_USERCONFIG_CURRENT_VERSION;
+    } else if (cfg->version > CBM_USERCONFIG_CURRENT_VERSION) {
+        char vbuf[16], cb[16];
+        snprintf(vbuf, sizeof(vbuf), "%d", cfg->version);
+        snprintf(cb, sizeof(cb), "%d", CBM_USERCONFIG_CURRENT_VERSION);
+        cbm_log_warn("userconfig.future_version",
+                     "version", vbuf,
+                     "current", cb,
+                     "hint", "this config was written for a newer CBM — some keys may be ignored");
+    }
+
     return cfg;
 }
 

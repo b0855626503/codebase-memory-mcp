@@ -883,6 +883,192 @@ static const char *receiver_property_name(const char *receiver_expr) {
     return p; /* just "$var" — return var name */
 }
 
+/* Sprint L.1: expanded business-signal suffix whitelist.
+ * Excludes Eloquent/Framework patterns (member, request, collection, builder).
+ * Explicitly skips *ServiceProvider (Laravel DI). */
+static bool is_business_field(const char *prop, size_t plen) {
+    static const struct {
+        const char *suffix;
+        size_t len;
+    } business[] = {
+        {"Repository", 10}, {"Service",    7}, {"Manager",   7},
+        {"Engine",     6}, {"Gateway",    7}, {"Client",    6},
+        {"Handler",    7}, {"Factory",    7}, {"Generator", 9},
+        {"Projector",  9}, {"Resolver",   8},
+    };
+    for (size_t i = 0; i < sizeof(business) / sizeof(business[0]); i++) {
+        if (plen > business[i].len &&
+            strcmp(prop + plen - business[i].len, business[i].suffix) == 0) {
+            /* Exclude *ServiceProvider — Laravel DI container */
+            if (business[i].len == 8 && plen > 15 &&
+                strcmp(prop + plen - 15, "ServiceProvider") == 0) {
+                return false;
+            }
+            return true;
+        }
+    }
+    /* *Provider that is NOT *ServiceProvider */
+    if (plen > 8 && strcmp(prop + plen - 8, "Provider") == 0) {
+        return !(plen > 15 && strcmp(prop + plen - 15, "ServiceProvider") == 0);
+    }
+    return false;
+}
+
+/* Sprint L.1: resolve member call by deriving target class from property name.
+ * Handles constructor-injected PHP properties that lack explicit Field nodes.
+ * Whitelist: business-signal suffixes (Repository, Service, Manager, Engine,
+ * Gateway, Client, Handler, Factory, Generator, Projector, Resolver, Provider).
+ *
+ * Heuristic: memberRepository → MemberRepository
+ *   - capitalize first letter
+ *   - search registry for Class with matching name
+ *   - find method in that class (follows INHERITS via registry)
+ */
+cbm_resolution_t cbm_registry_resolve_by_property(const cbm_registry_t *r,
+                                                    const char *receiver_expr,
+                                                    const char *method_name) {
+    if (!receiver_expr || !receiver_expr[0] || !method_name || !method_name[0]) {
+        return empty_result();
+    }
+
+    /* Parse property name from receiver expression: "$this->memberRepository" → "memberRepository" */
+    const char *prop = receiver_property_name(receiver_expr);
+    if (!prop || !prop[0]) {
+        return empty_result();
+    }
+
+    /* ── Whitelist check: business-signal suffixes only ── */
+    size_t plen = strlen(prop);
+    if (!is_business_field(prop, plen)) {
+        return empty_result();
+    }
+
+    /* ── Derive class name: capitalize first letter ── */
+    char type_name[CBM_SZ_256];
+    size_t tnl = plen < sizeof(type_name) - 1 ? plen : sizeof(type_name) - 1;
+    memcpy(type_name, prop, tnl);
+    type_name[tnl] = '\0';
+    if (type_name[0] >= 'a' && type_name[0] <= 'z') {
+        type_name[0] -= ('a' - 'A');
+    }
+
+    /* ── Search registry for Class with matching name ── */
+    const char **candidates = NULL;
+    int cand_count = 0;
+    cbm_registry_find_by_name(r, type_name, &candidates, &cand_count);
+    if (cand_count == 0) {
+        return empty_result();
+    }
+
+    /* Prefer exact class match in same package as caller.
+     * Filter to Class/Interface label, prefer exact name match. */
+    const char *best_class = NULL;
+    for (int ci = 0; ci < cand_count; ci++) {
+        const char *label = cbm_registry_label_of(r, candidates[ci]);
+        if (!label) continue;
+        if (strcmp(label, "Class") != 0 && strcmp(label, "Interface") != 0) continue;
+        /* Check that the QN ends with the type name (exact class match) */
+        size_t qnl = strlen(candidates[ci]);
+        if (qnl >= tnl) {
+            const char *suffix = candidates[ci] + qnl - tnl;
+            /* Case-insensitive suffix match */
+            bool match = true;
+            for (size_t si = 0; si < tnl; si++) {
+                char ca = suffix[si];
+                char cb = type_name[si];
+                if (ca >= 'A' && ca <= 'Z') ca += ('a' - 'A');
+                if (cb >= 'A' && cb <= 'Z') cb += ('a' - 'A');
+                if (ca != cb) { match = false; break; }
+            }
+            if (match) {
+                best_class = candidates[ci];
+                break;
+            }
+        }
+    }
+    if (!best_class) {
+        /* Fallback: first Class/Interface candidate */
+        for (int ci = 0; ci < cand_count; ci++) {
+            const char *label = cbm_registry_label_of(r, candidates[ci]);
+            if (label && (strcmp(label, "Class") == 0 || strcmp(label, "Interface") == 0)) {
+                best_class = candidates[ci];
+                break;
+            }
+        }
+    }
+    if (!best_class) {
+        return empty_result();
+    }
+
+    /* ── Search for method in the target class ── */
+    const char **method_cands = NULL;
+    int method_cand_count = 0;
+    cbm_registry_find_by_name(r, method_name, &method_cands, &method_cand_count);
+    if (method_cand_count == 0) {
+        /* Method not found in registry — could be inherited from parent.
+         * Return a partial resolution: the caller will look up the target
+         * class node and follow INHERITS to find the method. */
+        char resolved_qn[CBM_SZ_256];
+        snprintf(resolved_qn, sizeof(resolved_qn), "%s.%s", best_class, method_name);
+        cbm_resolution_t res = {.qualified_name = resolved_qn,
+                                .strategy = "field_type_heuristic",
+                                .confidence = 0.80,
+                                .candidate_count = 1};
+        return res;
+    }
+
+    /* Find method candidate whose QN starts with the best_class prefix */
+    for (int mi = 0; mi < method_cand_count; mi++) {
+        size_t bcl = strlen(best_class);
+        if (strncmp(method_cands[mi], best_class, bcl) == 0 &&
+            method_cands[mi][bcl] == '.') {
+            cbm_resolution_t res = {.qualified_name = method_cands[mi],
+                                    .strategy = "field_type_heuristic",
+                                    .confidence = 0.85,
+                                    .candidate_count = 1};
+            return res;
+        }
+    }
+
+    /* Method not found directly on best_class — fall back to any class
+     * that has this method (inherited methods: findOneWhere on parent
+     * Repository, not on MemberRepository directly). Prefer Class/Interface
+     * label candidates. */
+    const char *fallback_method = NULL;
+    for (int mi = 0; mi < method_cand_count; mi++) {
+        const char *dot = strrchr(method_cands[mi], '.');
+        if (!dot) continue;
+        /* Extract class QN from method QN */
+        size_t mcl = (size_t)(dot - method_cands[mi]);
+        if (mcl >= CBM_SZ_256) continue;
+        char method_class[CBM_SZ_256];
+        memcpy(method_class, method_cands[mi], mcl);
+        method_class[mcl] = '\0';
+        const char *mlabel = cbm_registry_label_of(r, method_class);
+        if (mlabel && (strcmp(mlabel, "Class") == 0 || strcmp(mlabel, "Interface") == 0)) {
+            fallback_method = method_cands[mi];
+            break;
+        }
+    }
+    if (fallback_method) {
+        cbm_resolution_t res = {.qualified_name = fallback_method,
+                                .strategy = "field_type_heuristic_inherited",
+                                .confidence = 0.75,
+                                .candidate_count = 1};
+        return res;
+    }
+
+    /* Method not found at all — try partial resolution so CALLS edge
+     * can still be emitted and resolved later via INHERITS traversal. */
+    char resolved_qn[CBM_SZ_256];
+    snprintf(resolved_qn, sizeof(resolved_qn), "%s.%s", best_class, method_name);
+    cbm_resolution_t res = {.qualified_name = resolved_qn,
+                            .strategy = "field_type_heuristic",
+                            .confidence = 0.70,
+                            .candidate_count = 1};
+    return res;
+}
+
 cbm_resolution_t cbm_registry_resolve_member_call(const cbm_registry_t *r, const cbm_gbuf_t *gbuf,
                                                    const char *receiver_expr,
                                                    const char *method_name,
@@ -901,7 +1087,13 @@ cbm_resolution_t cbm_registry_resolve_member_call(const cbm_registry_t *r, const
     const cbm_gbuf_node_t *field_node =
         cbm_gbuf_find_class_field(gbuf, enclosing_class_qn, prop);
     if (!field_node || !field_node->properties_json) {
-        return empty_result();
+        /* Fallback: no Field node (constructor-injected properties in PHP).
+         * Derive type name from property name heuristic:
+         *   memberRepository    → MemberRepository
+         *   walletTransactionService → WalletTransactionService
+         * Sprint L v1: whitelist *Repository and *Service fields only
+         * to avoid noise from Eloquent/Model/Framework fields. */
+        return cbm_registry_resolve_by_property(r, receiver_expr, method_name);
     }
 
     /* Step 3: Extract return_type from Field's properties_json.
@@ -980,6 +1172,44 @@ cbm_resolution_t cbm_registry_resolve_member_call(const cbm_registry_t *r, const
                 if (strstr(qn_lower_di, tn_lower)) {
                     best = candidates2[ci];
                     best_matches++;
+                } else {
+                    /* Subsequence fallback: type_name segments must appear in
+                     * order in the registry QN, allowing extra segments like
+                     * "src", "app", "Http" in between. Fixes the QN format
+                     * mismatch where Field return_type lacks path segments
+                     * (e.g. "Gametech.Member.Repositories.MemberRepository" vs
+                     *  "...Gametech.Member.src.Repositories.MemberRepository..."). */
+                    const char *qseg = qn_lower_di;
+                    const char *tseg = tn_lower;
+                    bool all_match = true;
+                    while (*tseg && all_match) {
+                        /* Skip dots in both strings */
+                        if (*tseg == '.') { tseg++; continue; }
+                        if (*qseg == '.') { qseg++; continue; }
+                        /* Find end of current type_name segment */
+                        const char *tend = strchr(tseg, '.');
+                        size_t tlen = tend ? (size_t)(tend - tseg) : strlen(tseg);
+                        /* Try to match this segment at current qseg position,
+                         * advancing qseg forward if no match at current position */
+                        bool seg_found = false;
+                        while (*qseg) {
+                            const char *qend = strchr(qseg, '.');
+                            size_t qlen = qend ? (size_t)(qend - qseg) : strlen(qseg);
+                            if (qlen == tlen && strncmp(qseg, tseg, tlen) == 0) {
+                                qseg += tlen;
+                                seg_found = true;
+                                break;
+                            }
+                            /* Advance to next segment */
+                            qseg = qend ? qend + 1 : qseg + qlen;
+                        }
+                        if (!seg_found) { all_match = false; break; }
+                        tseg = tend ? tend + 1 : tseg + tlen;
+                    }
+                    if (all_match) {
+                        best = candidates2[ci];
+                        best_matches++;
+                    }
                 }
             }
             if (best_matches == 0) {

@@ -1,0 +1,261 @@
+{
+  "benchmark": "semantic-search-1168lot-v1",
+  "profile": "none",
+  "effective_config": {
+    "enabled": true,
+    "label": true,
+    "calls": true,
+    "called_by": true,
+    "routes_to": true,
+    "inherits": true,
+    "parent_class": false
+  },
+  "metrics": {
+    "recall_at_5": 0.1000,
+    "recall_at_10": 0.1333,
+    "mrr": 0.0881,
+    "precision_at_5": 0.0700
+  },
+  "per_query": [
+    {
+      "query": "wallet deposit history",
+      "weight": 1.0,
+      "recall_at_5": 0.0000,
+      "recall_at_10": 0.0000,
+      "mrr": 0.0000,
+      "precision_at_5": 0.0000
+    },
+    {
+      "query": "wallet withdraw history",
+      "weight": 1.0,
+      "recall_at_5": 0.0000,
+      "recall_at_10": 0.0000,
+      "mrr": 0.0000,
+      "precision_at_5": 0.0000
+    },
+    {
+      "query": "wallet balance credit",
+      "weight": 1.0,
+      "recall_at_5": 0.0000,
+      "recall_at_10": 0.0000,
+      "mrr": 0.0000,
+      "precision_at_5": 0.0000
+    },
+    {
+      "query": "wallet transaction history",
+      "weight": 1.0,
+      "recall_at_5": 0.0000,
+      "recall_at_10": 0.0000,
+      "mrr": 0.0000,
+      "precision_at_5": 0.0000
+    },
+    {
+      "query": "game wallet balance adjust",
+      "weight": 1.0,
+      "recall_at_5": 0.0000,
+      "recall_at_10": 0.0000,
+      "mrr": 0.0000,
+      "precision_at_5": 0.0000
+    },
+    {
+      "query": "yeekee round current",
+      "weight": 1.0,
+      "recall_at_5": 1.0000,
+      "recall_at_10": 1.0000,
+      "mrr": 1.0000,
+      "precision_at_5": 1.0000
+    },
+    {
+      "query": "lotto bet submit",
+      "weight": 1.0,
+      "recall_at_5": 0.0000,
+      "recall_at_10": 0.0000,
+      "mrr": 0.0000,
+      "precision_at_5": 0.0000
+    },
+    {
+      "query": "lotto draw result market",
+      "weight": 1.0,
+      "recall_at_5": 0.0000,
+      "recall_at_10": 0.0000,
+      "mrr": 0.0000,
+      "precision_at_5": 0.0000
+    },
+    {
+      "query": "yeekee shoot submit",
+      "weight": 1.0,
+      "recall_at_5": 0.0000,
+      "recall_at_10": 0.0000,
+      "mrr": 0.0000,
+      "precision_at_5": 0.0000
+    },
+    {
+      "query": "lotto package selection",
+      "weight": 1.0,
+      "recall_at_5": 0.0000,
+      "recall_at_10": 0.0000,
+      "mrr": 0.0000,
+      "precision_at_5": 0.0000
+    },
+    {
+      "query": "bonus promotion sum",
+      "weight": 1.0,
+      "recall_at_5": 0.0000,
+      "recall_at_10": 0.0000,
+      "mrr": 0.0000,
+      "precision_at_5": 0.0000
+    },
+    {
+      "query": "promotion admin management",
+      "weight": 1.0,
+      "recall_at_5": 1.0000,
+      "recall_at_10": 1.0000,
+      "mrr": 0.5000,
+      "precision_at_5": 0.4000
+    },
+    {
+      "query": "promotion bonus win slot",
+      "weight": 1.0,
+      "recall_at_5": 0.0000,
+      "recall_at_10": 0.0000,
+      "mrr": 0.0000,
+      "precision_at_5": 0.0000
+    },
+    {
+      "query": "game provider list",
+      "weight": 1.0,
+      "recall_at_5": 0.0000,
+      "recall_at_10": 0.0000,
+      "mrr": 0.0000,
+      "precision_at_5": 0.5000
+    },
+    {
+      "query": "game listing by provider",
+      "weight": 1.0,
+      "recall_at_5": 0.0000,
+      "recall_at_10": 0.0000,
+      "mrr": 0.0000,
+      "precision_at_5": 0.0000
+    },
+    {
+      "query": "kickoff lobby token",
+      "weight": 1.0,
+      "recall_at_5": 0.0000,
+      "recall_at_10": 0.0000,
+      "mrr": 0.0000,
+      "precision_at_5": 0.0000
+    },
+    {
+      "query": "member search lookup",
+      "weight": 1.0,
+      "recall_at_5": 0.0000,
+      "recall_at_10": 0.0000,
+      "mrr": 0.0000,
+      "precision_at_5": 0.0000
+    },
+    {
+      "query": "member wallet manual adjust",
+      "weight": 1.0,
+      "recall_at_5": 0.0000,
+      "recall_at_10": 0.0000,
+      "mrr": 0.0000,
+      "precision_at_5": 0.0000
+    },
+    {
+      "query": "member register attach line",
+      "weight": 1.0,
+      "recall_at_5": 0.0000,
+      "recall_at_10": 0.0000,
+      "mrr": 0.0000,
+      "precision_at_5": 0.0000
+    },
+    {
+      "query": "lotto ticket list filter",
+      "weight": 1.0,
+      "recall_at_5": 0.0000,
+      "recall_at_10": 0.0000,
+      "mrr": 0.0000,
+      "precision_at_5": 0.0000
+    },
+    {
+      "query": "lotto ticket detail summary",
+      "weight": 1.0,
+      "recall_at_5": 0.0000,
+      "recall_at_10": 0.0000,
+      "mrr": 0.0000,
+      "precision_at_5": 0.0000
+    },
+    {
+      "query": "lotto ticket cancel",
+      "weight": 1.0,
+      "recall_at_5": 0.0000,
+      "recall_at_10": 0.0000,
+      "mrr": 0.0000,
+      "precision_at_5": 0.0000
+    },
+    {
+      "query": "admin member management list",
+      "weight": 1.0,
+      "recall_at_5": 0.0000,
+      "recall_at_10": 0.0000,
+      "mrr": 0.0000,
+      "precision_at_5": 0.0000
+    },
+    {
+      "query": "admin chat reply message",
+      "weight": 1.0,
+      "recall_at_5": 1.0000,
+      "recall_at_10": 1.0000,
+      "mrr": 1.0000,
+      "precision_at_5": 0.2000
+    },
+    {
+      "query": "admin game provider config",
+      "weight": 1.0,
+      "recall_at_5": 0.0000,
+      "recall_at_10": 0.0000,
+      "mrr": 0.0000,
+      "precision_at_5": 0.0000
+    },
+    {
+      "query": "unsettle bets void settlement",
+      "weight": 1.0,
+      "recall_at_5": 0.0000,
+      "recall_at_10": 0.0000,
+      "mrr": 0.0000,
+      "precision_at_5": 0.0000
+    },
+    {
+      "query": "yeekee result engine settle",
+      "weight": 1.0,
+      "recall_at_5": 0.0000,
+      "recall_at_10": 0.0000,
+      "mrr": 0.0000,
+      "precision_at_5": 0.0000
+    },
+    {
+      "query": "yeekee reward apply position",
+      "weight": 1.0,
+      "recall_at_5": 0.0000,
+      "recall_at_10": 0.0000,
+      "mrr": 0.0000,
+      "precision_at_5": 0.0000
+    },
+    {
+      "query": "game session middleware user check",
+      "weight": 1.0,
+      "recall_at_5": 0.0000,
+      "recall_at_10": 1.0000,
+      "mrr": 0.1429,
+      "precision_at_5": 0.0000
+    },
+    {
+      "query": "webhook signature verify sms",
+      "weight": 1.0,
+      "recall_at_5": 0.0000,
+      "recall_at_10": 0.0000,
+      "mrr": 0.0000,
+      "precision_at_5": 0.0000
+    }
+  ]
+}

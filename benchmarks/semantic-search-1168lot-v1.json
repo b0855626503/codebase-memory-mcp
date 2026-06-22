@@ -1,0 +1,216 @@
+{
+  "name": "semantic-search-1168lot-v1",
+  "description": "Human-curated benchmark for 1168lot semantic search. 30 queries across 9 domains: Wallet(5), Lotto(5), Promotion(3), Provider(3), Member(3), Ticket(3), Admin(3), Settlement(3), Middleware(2). All expected/acceptable targets verified against actual graph QNs.",
+  "queries": [
+    {
+      "domain": "wallet",
+      "query": "wallet deposit history",
+      "expected": ["HistoryController.loadDeposit"],
+      "acceptable": ["HistoryController.loadBill", "HistoryController.index"],
+      "weight": 1.0
+    },
+    {
+      "domain": "wallet",
+      "query": "wallet withdraw history",
+      "expected": ["HistoryController.loadWithdraw"],
+      "acceptable": ["HistoryController.loadBillType", "DashboardSummaryProjector.withdrawMetrics"],
+      "weight": 1.0
+    },
+    {
+      "domain": "wallet",
+      "query": "wallet balance credit",
+      "expected": ["MemberController.gamesetwallet"],
+      "acceptable": ["MemberController.setWallet", "resolvePaidWalletTransactionId", "MemberController.broadcastManualWalletAdjust"],
+      "weight": 1.0
+    },
+    {
+      "domain": "wallet",
+      "query": "wallet transaction history",
+      "expected": ["HistoryController.loadMoneyTran"],
+      "acceptable": ["HistoryController.loadBill", "HistoryController.loadSpin", "HistoryController.index"],
+      "weight": 1.0
+    },
+    {
+      "domain": "wallet",
+      "query": "game wallet balance adjust",
+      "expected": ["MemberController.gamesetwallet"],
+      "acceptable": ["MemberController.setWallet", "MemberController.broadcastManualWalletAdjust"],
+      "weight": 1.0
+    },
+    {
+      "domain": "lotto",
+      "query": "yeekee round current",
+      "expected": ["LottoController.yeekeeCurrentRound"],
+      "acceptable": ["LottoController.yeekeeRounds", "LottoController.yeekeeRound", "LottoController.yeekeeMarketRounds"],
+      "weight": 1.0
+    },
+    {
+      "domain": "lotto",
+      "query": "lotto bet submit",
+      "expected": ["LottoController.bet"],
+      "acceptable": ["LottoController.bettingContext", "LottoController.selectPackage", "LottoController.selectedPackage"],
+      "weight": 1.0
+    },
+    {
+      "domain": "lotto",
+      "query": "lotto draw result market",
+      "expected": ["LottoController.draw"],
+      "acceptable": ["LottoController.draws", "LottoController.marketResults", "LottoController.drawResult"],
+      "weight": 1.0
+    },
+    {
+      "domain": "lotto",
+      "query": "yeekee shoot submit",
+      "expected": ["LottoController.submitShoot"],
+      "acceptable": ["LottoController.yeekeeShoots", "LottoController.yeekeeResultProof"],
+      "weight": 1.0
+    },
+    {
+      "domain": "lotto",
+      "query": "lotto package selection",
+      "expected": ["LottoController.selectPackage"],
+      "acceptable": ["LottoController.packages", "LottoController.selectedPackage", "LottoController.marketContent"],
+      "weight": 1.0
+    },
+    {
+      "domain": "promotion",
+      "query": "bonus promotion sum",
+      "expected": ["MemberGameLogRepository.sumBonus"],
+      "acceptable": ["MemberGameLogRepository.sumPromotion"],
+      "weight": 1.0
+    },
+    {
+      "domain": "promotion",
+      "query": "promotion admin management",
+      "expected": ["PromotionController.index"],
+      "acceptable": ["PromotionController.create", "hasActiveTimeSlot"],
+      "weight": 1.0
+    },
+    {
+      "domain": "promotion",
+      "query": "promotion bonus win slot",
+      "expected": ["SlotxoController.bonusWin"],
+      "acceptable": ["resolveBonus", "bonusMetrics", "bonusWin"],
+      "weight": 1.0
+    },
+    {
+      "domain": "provider",
+      "query": "game provider list",
+      "expected": ["GameController.getProviders"],
+      "acceptable": ["KickoffRepository.providerList", "GameController.sortProvidersByRules", "GameController.transformProviders"],
+      "weight": 1.0
+    },
+    {
+      "domain": "provider",
+      "query": "game listing by provider",
+      "expected": ["GameController.getGames"],
+      "acceptable": ["GameController.getProviders", "KickoffRepository.providerList"],
+      "weight": 1.0
+    },
+    {
+      "domain": "provider",
+      "query": "kickoff lobby token",
+      "expected": ["KickoffRepository.ensureMemberLobbyToken"],
+      "acceptable": ["KickoffRepository.saveMemberLobbyToken", "KickoffRepository.providerList"],
+      "weight": 1.0
+    },
+    {
+      "domain": "member",
+      "query": "member search lookup",
+      "expected": ["ChatController.findMember"],
+      "acceptable": ["LottoController.resolveCustomerMember", "LottoController.resolveMemberId"],
+      "weight": 1.0
+    },
+    {
+      "domain": "member",
+      "query": "member wallet manual adjust",
+      "expected": ["MemberController.broadcastManualWalletAdjust"],
+      "acceptable": ["MemberController.manualWalletAdjustMessage", "MemberController.setWallet"],
+      "weight": 1.0
+    },
+    {
+      "domain": "member",
+      "query": "member register attach line",
+      "expected": ["ChatController.registerMember"],
+      "acceptable": ["ChatController.attachMember", "ChatController.findMember"],
+      "weight": 1.0
+    },
+    {
+      "domain": "ticket",
+      "query": "lotto ticket list filter",
+      "expected": ["LottoController.tickets"],
+      "acceptable": ["LottoController.ticket", "LottoController.filterTicketRowsByStatus", "LottoController.ticketQuery"],
+      "weight": 1.0
+    },
+    {
+      "domain": "ticket",
+      "query": "lotto ticket detail summary",
+      "expected": ["LottoController.ticket"],
+      "acceptable": ["LottoController.buildTicketSummaryContext", "LottoController.mapTicketSummary", "LottoController.ticketResultContext"],
+      "weight": 1.0
+    },
+    {
+      "domain": "ticket",
+      "query": "lotto ticket cancel",
+      "expected": ["LottoController.cancel"],
+      "acceptable": ["LottoController.ticket", "LottoController.resolveTicketReason"],
+      "weight": 1.0
+    },
+    {
+      "domain": "admin",
+      "query": "admin member management list",
+      "expected": ["MemberController.index"],
+      "acceptable": ["MemberController.edit", "MemberController.setWallet"],
+      "weight": 1.0
+    },
+    {
+      "domain": "admin",
+      "query": "admin chat reply message",
+      "expected": ["ChatController.reply"],
+      "acceptable": ["ChatController.index", "ChatController.show", "ChatController.buildReplyToMeta"],
+      "weight": 1.0
+    },
+    {
+      "domain": "admin",
+      "query": "admin game provider config",
+      "expected": ["GameSingleController.loadProvider"],
+      "acceptable": ["GameController.getProviders", "KickoffRepository.providerList"],
+      "weight": 1.0
+    },
+    {
+      "domain": "settlement",
+      "query": "unsettle bets void settlement",
+      "expected": ["RoyalSlotGaminngNewController.unsettleBets"],
+      "acceptable": ["RoyalSlotGaminngNewController.voidSettled", "SbobetController.unsettleBets", "SbobetController.voidSettled"],
+      "weight": 1.0
+    },
+    {
+      "domain": "settlement",
+      "query": "yeekee result engine settle",
+      "expected": ["YeekeeResultEngineService.computeFromRound"],
+      "acceptable": ["YeekeeResultEngineService.computeShootsSumOnly", "YeekeeShootingRewardService.applyForRound", "YeekeeShootingRewardService.isComputedSettledContext"],
+      "weight": 1.0
+    },
+    {
+      "domain": "settlement",
+      "query": "yeekee reward apply position",
+      "expected": ["YeekeeShootingRewardService.applyRewardPosition"],
+      "acceptable": ["YeekeeShootingRewardService.applyForRound", "YeekeeShootingRewardService.resolvePolicy"],
+      "weight": 1.0
+    },
+    {
+      "domain": "middleware",
+      "query": "game session middleware user check",
+      "expected": ["EnsureUserInCurrentGame.handle"],
+      "acceptable": ["EnsureUserInCurrentGame.extractSessionToken", "EnsureUserInCurrentGame.shouldSkipSessionCheck"],
+      "weight": 1.0
+    },
+    {
+      "domain": "middleware",
+      "query": "webhook signature verify sms",
+      "expected": ["VerifySmsWebhookSignature.handle"],
+      "acceptable": ["VerifySmsWebhookSignature.resolveProvider", "VerifySmsWebhookSignature.tokenConfigured"],
+      "weight": 1.0
+    }
+  ]
+}

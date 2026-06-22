@@ -1837,12 +1837,26 @@ static void resolve_file_calls(resolve_ctx_t *rc, resolve_worker_state_t *ws, CB
                 }
             }
             if (!res.qualified_name || res.qualified_name[0] == '\0') {
-                /* Member calls ($this->x(), $obj->y()) — the receiver was
-                 * stripped from callee_name at extraction. Name-only matching
-                 * cannot safely resolve them: $this->create() matched
-                 * FreeGameController.create → fan_in 2868.
-                 * Block registry fallback. False negative > false positive. */
-                if (!has_receiver) {
+                /* Sprint L: when member call resolution fails (Field node
+                 * return_type QN mismatch or missing Field), try the property
+                 * name heuristic as a last-resort fallback. Only for calls
+                 * with receiver_expr set (member calls like $this->x->y()). */
+                if (has_receiver && call->receiver_expr) {
+                    const char *mname = call->callee_name;
+                    /* Strip leading dots/arrows from callee_name */
+                    const char *dot = strrchr(mname, '.');
+                    if (dot) mname = dot + 1;
+                    const char *arrow = strrchr(mname, '>');
+                    if (arrow) mname = arrow + 1;
+                    res = cbm_registry_resolve_by_property(
+                        rc->registry, call->receiver_expr, mname);
+                }
+                if ((!res.qualified_name || res.qualified_name[0] == '\0') && !has_receiver) {
+                    /* Member calls ($this->x(), $obj->y()) — the receiver was
+                     * stripped from callee_name at extraction. Name-only matching
+                     * cannot safely resolve them: $this->create() matched
+                     * FreeGameController.create → fan_in 2868.
+                     * Block registry fallback. False negative > false positive. */
                     res = cbm_registry_resolve(rc->registry, call->callee_name, module_qn, imp_keys,
                                                imp_vals, imp_count);
                 }

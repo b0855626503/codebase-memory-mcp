@@ -19,6 +19,7 @@
 #include "pipeline/pipeline.h"
 #include "store/store.h"
 #include "cli/cli.h"
+#include "cli/cmd_benchmark.h"
 #include "cli/progress_sink.h"
 #include "foundation/constants.h"
 
@@ -287,7 +288,8 @@ static void print_help(void) {
     printf("  codebase-memory-mcp install [-y|-n] [--force] [--dry-run]\n");
     printf("  codebase-memory-mcp uninstall [-y|-n] [--dry-run]\n");
     printf("  codebase-memory-mcp update [-y|-n]\n");
-    printf("  codebase-memory-mcp config <list|get|set|reset>\n");
+    printf("  codebase-memory-mcp config <list|get|set|reset|show>\n");
+    printf("  codebase-memory-mcp benchmark <manifest.json> [--output <results.json>]\n");
     printf("  codebase-memory-mcp --version    Print version\n");
     printf("  codebase-memory-mcp --help       Print this help\n");
     printf("\nUI options:\n");
@@ -345,6 +347,9 @@ static int handle_subcommand(int argc, char **argv) {
         }
         if (strcmp(argv[i], "config") == 0) {
             return cbm_cmd_config(argc - i - SKIP_ONE, argv + i + SKIP_ONE);
+        }
+        if (strcmp(argv[i], "benchmark") == 0) {
+            return cbm_cmd_benchmark(argc - i - SKIP_ONE, argv + i + SKIP_ONE);
         }
     }
     return CBM_NOT_FOUND;

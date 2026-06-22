@@ -226,7 +226,7 @@ WATCHER_SRCS = src/watcher/watcher.c
 GIT_SRCS = src/git/git_context.c
 
 # CLI module (new)
-CLI_SRCS = src/cli/cli.c src/cli/progress_sink.c src/cli/hook_augment.c
+CLI_SRCS = src/cli/cli.c src/cli/progress_sink.c src/cli/hook_augment.c src/cli/cmd_benchmark.c
 
 # UI module (graph visualization)
 UI_SRCS = \
