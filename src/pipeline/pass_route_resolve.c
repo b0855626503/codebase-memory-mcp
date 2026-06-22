@@ -28,19 +28,39 @@
 /* ── Helpers ──────────────────────────────────────────────────── */
 
 /* Return true if file_path looks like a Laravel route file.
- * Matches: routes/web.php, routes/api.php, packages/X/routes/Y.php */
+ * Sprint M: expanded to match:
+ *   routes/web.php          (parent dir = "routes")
+ *   packages/X/Routes/Y.php (parent dir = "Routes", case-insensitive)
+ *   packages/X/Http/routes.php (file named "routes.php" or "route.php")
+ *   packages/X/src/routes.php  (file named "routes.php")
+ */
 static bool is_route_file(const char *file_path) {
     if (!file_path) return false;
-    /* Match routes/web.php, routes/api.php, etc. */
+
+    /* Check 1: Parent directory named "routes" (case-insensitive) */
     const char *last_slash = strrchr(file_path, '/');
-    if (!last_slash) return false;
-    /* Check if parent directory is named "routes" */
-    const char *dir_start = last_slash;
-    while (dir_start > file_path && dir_start[-1] != '/') dir_start--;
-    /* "routes" directory — dir_start now points to the first char of the
-     * parent directory name, which may be at the root of the path */
-    size_t dir_len = (size_t)(last_slash - dir_start);
-    if (dir_len == 6 && strncmp(dir_start, "routes", 6) == 0) return true;
+    if (last_slash) {
+        const char *dir_start = last_slash;
+        while (dir_start > file_path && dir_start[-1] != '/') dir_start--;
+        size_t dir_len = (size_t)(last_slash - dir_start);
+        if (dir_len == 6 &&
+            (dir_start[0] == 'r' || dir_start[0] == 'R') &&
+            (dir_start[1] == 'o' || dir_start[1] == 'O') &&
+            (dir_start[2] == 'u' || dir_start[2] == 'U') &&
+            (dir_start[3] == 't' || dir_start[3] == 'T') &&
+            (dir_start[4] == 'e' || dir_start[4] == 'E') &&
+            (dir_start[5] == 's' || dir_start[5] == 'S')) return true;
+    }
+
+    /* Check 2: File basename contains "route" (case-insensitive)
+     * Matches: routes.php, route.php, shop-routes.php, admin-routes.php,
+     *          routesub.php, routes_addon.php */
+    const char *basename = last_slash ? last_slash + 1 : file_path;
+    const char *route_in_name = strstr(basename, "route");
+    if (!route_in_name) route_in_name = strstr(basename, "Route");
+    if (!route_in_name) route_in_name = strstr(basename, "ROUTE");
+    if (route_in_name) return true;
+
     return false;
 }
 
