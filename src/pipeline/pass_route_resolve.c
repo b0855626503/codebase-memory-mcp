@@ -159,7 +159,9 @@ static int scan_route_definitions(const char *source, const char *file_path,
         const char *paren = strchr(verb_start, '(');
         if (!paren) { p = route + 7; continue; }
 
-        /* Extract first argument: path string */
+        /* Extract path string argument.
+         * Route::get('/path', ...)    → first arg is path
+         * Route::match(['GET','POST'], '/path', ...) → second arg is path */
         const char *path_start = NULL;
         const char *path_end = NULL;
         const char *q = paren + 1;
@@ -168,6 +170,19 @@ static int scan_route_definitions(const char *source, const char *file_path,
             char quote = *q;
             path_start = q + 1;
             path_end = strchr(path_start, quote);
+        } else if (*q == '[' && strcmp(verb, "match") == 0) {
+            /* Route::match(['GET','POST'], '/path', ...)
+             * Skip the first array argument, extract second string arg */
+            const char *arr_end = strchr(q, ']');
+            if (arr_end) {
+                q = arr_end + 1;
+                while (*q && (*q == ' ' || *q == ',')) q++;
+                if (*q == '\'' || *q == '"') {
+                    char quote = *q;
+                    path_start = q + 1;
+                    path_end = strchr(path_start, quote);
+                }
+            }
         }
         if (!path_start || !path_end) { p = route + 7; continue; }
         char path[CBM_SZ_256];
