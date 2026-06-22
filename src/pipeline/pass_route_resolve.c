@@ -125,10 +125,45 @@ static int scan_route_definitions(const char *source, const char *file_path,
     int created = 0;
     const char *p = source;
 
+    /* Prefix stack for Route::prefix()->group() nesting.
+     * When scanning Route::get('/path') inside Route::prefix('api')->group(),
+     * prepend the prefix to get '/api/path'. Stack depth limit: 4 levels. */
+    char prefix_stack[4][CBM_SZ_128];
+    int prefix_depth = 0;
+    #define PREFIX_STACK_PUSH(s) do { \
+        if (prefix_depth < 4) snprintf(prefix_stack[prefix_depth++], CBM_SZ_128, "%s", s); \
+    } while(0)
+    #define PREFIX_STACK_POP() do { if (prefix_depth > 0) prefix_depth--; } while(0)
+
     while (*p) {
         /* Look for "Route::" */
         const char *route = strstr(p, "Route::");
         if (!route) break;
+
+        /* Track prefix stack: Route::prefix('xxx') pushes, '});' pops */
+        if (strncmp(route, "Route::prefix(", 14) == 0) {
+            const char *pref = route + 14;
+            while (*pref == ' ') pref++;
+            if (*pref == '\'' || *pref == '"') {
+                char pq = *pref;
+                const char *ps = pref + 1;
+                const char *pe = strchr(ps, pq);
+                if (pe && pe > ps) {
+                    char prefix_val[CBM_SZ_128];
+                    size_t pvl = (size_t)(pe - ps);
+                    if (pvl >= sizeof(prefix_val)) pvl = sizeof(prefix_val) - 1;
+                    memcpy(prefix_val, ps, pvl);
+                    prefix_val[pvl] = '\0';
+                    PREFIX_STACK_PUSH(prefix_val);
+                }
+            }
+            p = route + 14;
+            continue;
+        }
+        /* Track group closure: '});' pops prefix */
+        if (strncmp(route, "});", 3) == 0 || strncmp(route, "} );", 4) == 0) {
+            PREFIX_STACK_POP();
+        }
 
         /* Extract verb: the word after "Route::" */
         const char *verb_start = route + 7; /* skip "Route::" */
@@ -260,7 +295,18 @@ static int scan_route_definitions(const char *source, const char *file_path,
             static const char *suffixes[] = {"","","/{id}","/{id}","/{id}",NULL};
             for (int ai = 0; actions[ai]; ai++) {
                 char full_path[CBM_SZ_256];
-                snprintf(full_path, sizeof(full_path), "%s%s", path, suffixes[ai]);
+                /* Prepend prefix stack */
+                size_t fp2 = 0;
+                for (int pi = 0; pi < prefix_depth; pi++) {
+                    if (fp2 + strlen(prefix_stack[pi]) + 1 < sizeof(full_path)) {
+                        if (fp2 > 0) full_path[fp2++] = '/';
+                        size_t pl = strlen(prefix_stack[pi]);
+                        memcpy(full_path + fp2, prefix_stack[pi], pl);
+                        fp2 += pl;
+                    }
+                }
+                if (fp2 > 0 && path[0] != '/') full_path[fp2++] = '/';
+                snprintf(full_path + fp2, sizeof(full_path) - fp2, "%s%s", path, suffixes[ai]);
 
                 /* Find the controller method in the graph */
                 int64_t method_id = find_controller_method(gbuf, controller, actions[ai]);
@@ -282,7 +328,23 @@ static int scan_route_definitions(const char *source, const char *file_path,
             const char *mname = method[0] ? method : "__invoke";
             int64_t method_id = find_controller_method(gbuf, controller, mname);
             if (method_id >= 0) {
-                int64_t route_id = ensure_route_node(gbuf, method_upper, path);
+                /* Sprint M2: prepend prefix stack to route path.
+                 * Route::prefix('sms_campaign')->group( fn() {
+                 *   Route::get('/',     ...) → /sms_campaign/
+                 *   Route::post('edit', ...) → /sms_campaign/edit */
+                char full_path[CBM_SZ_256];
+                size_t fp = 0;
+                for (int pi = 0; pi < prefix_depth; pi++) {
+                    if (fp + strlen(prefix_stack[pi]) + 1 < sizeof(full_path)) {
+                        if (fp > 0) full_path[fp++] = '/';
+                        size_t pl = strlen(prefix_stack[pi]);
+                        memcpy(full_path + fp, prefix_stack[pi], pl);
+                        fp += pl;
+                    }
+                }
+                if (fp > 0 && path[0] != '/') full_path[fp++] = '/';
+                snprintf(full_path + fp, sizeof(full_path) - fp, "%s", path);
+                int64_t route_id = ensure_route_node(gbuf, method_upper, full_path);
                 if (route_id >= 0) {
                     char edge_props[CBM_SZ_256];
                     snprintf(edge_props, sizeof(edge_props),
