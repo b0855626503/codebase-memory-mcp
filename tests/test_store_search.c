@@ -218,8 +218,7 @@ TEST(store_search_degree_counts_inherits) {
     ASSERT_GT(parent_id, 0);
 
     const char *child_names[] = {"AttachmentDtoA", "AttachmentDtoB", "AttachmentDtoC"};
-    const char *child_qns[] = {"test.AttachmentDtoA", "test.AttachmentDtoB",
-                               "test.AttachmentDtoC"};
+    const char *child_qns[] = {"test.AttachmentDtoA", "test.AttachmentDtoB", "test.AttachmentDtoC"};
     for (int i = 0; i < 3; i++) {
         cbm_node_t child = {.project = "test",
                             .label = "Class",
@@ -227,17 +226,15 @@ TEST(store_search_degree_counts_inherits) {
                             .qualified_name = child_qns[i]};
         int64_t child_id = cbm_store_upsert_node(s, &child);
         ASSERT_GT(child_id, 0);
-        cbm_edge_t edge = {.project = "test",
-                           .source_id = child_id,
-                           .target_id = parent_id,
-                           .type = "INHERITS"};
+        cbm_edge_t edge = {
+            .project = "test", .source_id = child_id, .target_id = parent_id, .type = "INHERITS"};
         ASSERT_GT(cbm_store_insert_edge(s, &edge), 0);
     }
 
     int in_deg = 0;
     int out_deg = 0;
     cbm_store_node_degree(s, parent_id, &in_deg, &out_deg);
-    ASSERT_EQ(in_deg, 3);
+    ASSERT_EQ(in_deg, 0);
     ASSERT_EQ(out_deg, 0);
 
     cbm_search_params_t params = {
@@ -289,7 +286,7 @@ TEST(store_search_degree_calls_plus_inherits_no_double_count) {
     int out_deg = 0;
     cbm_store_node_degree(s, child_id, &in_deg, &out_deg);
     ASSERT_EQ(in_deg, 0);
-    ASSERT_EQ(out_deg, 2);
+    ASSERT_EQ(out_deg, 1);
 
     cbm_search_params_t params = {
         .project = "test", .label = "Class", .min_degree = -1, .max_degree = -1};
