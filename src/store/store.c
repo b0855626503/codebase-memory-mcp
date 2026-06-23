@@ -1855,7 +1855,8 @@ void cbm_store_node_degree(cbm_store_t *s, int64_t node_id, int *in_deg, int *ou
     *in_deg = 0;
     *out_deg = 0;
 
-    const char *in_sql = "SELECT COUNT(*) FROM edges WHERE target_id = ?1 AND type = 'CALLS'";
+    const char *in_sql = "SELECT COUNT(*) FROM edges WHERE target_id = ?1 AND "
+                         "type IN ('CALLS', 'USAGE', 'INHERITS', 'IMPLEMENTS')";
     sqlite3_stmt *stmt = NULL;
     if (sqlite3_prepare_v2(s->db, in_sql, CBM_NOT_FOUND, &stmt, NULL) == SQLITE_OK) {
         sqlite3_bind_int64(stmt, SKIP_ONE, node_id);
@@ -1865,7 +1866,8 @@ void cbm_store_node_degree(cbm_store_t *s, int64_t node_id, int *in_deg, int *ou
         sqlite3_finalize(stmt);
     }
 
-    const char *out_sql = "SELECT COUNT(*) FROM edges WHERE source_id = ?1 AND type = 'CALLS'";
+    const char *out_sql = "SELECT COUNT(*) FROM edges WHERE source_id = ?1 AND "
+                          "type IN ('CALLS', 'USAGE', 'INHERITS', 'IMPLEMENTS')";
     if (sqlite3_prepare_v2(s->db, out_sql, CBM_NOT_FOUND, &stmt, NULL) == SQLITE_OK) {
         sqlite3_bind_int64(stmt, SKIP_ONE, node_id);
         if (sqlite3_step(stmt) == SQLITE_ROW) {
@@ -2513,9 +2515,9 @@ int cbm_store_search(cbm_store_t *s, const cbm_search_params_t *params, cbm_sear
     const char *select_cols = "SELECT n.id, n.project, n.label, n.name, n.qualified_name, "
                               "n.file_path, n.start_line, n.end_line, n.properties, "
                               "(SELECT COUNT(*) FROM edges e WHERE e.target_id = n.id AND "
-                              "e.type IN ('CALLS','ROUTES_TO','HANDLES','USAGE')) AS in_deg, "
+                              "e.type IN ('CALLS','ROUTES_TO','HANDLES','USAGE','INHERITS','IMPLEMENTS')) AS in_deg, "
                               "(SELECT COUNT(*) FROM edges e WHERE e.source_id = n.id AND "
-                              "e.type IN ('CALLS','ROUTES_TO','HANDLES','USAGE')) AS out_deg ";
+                              "e.type IN ('CALLS','ROUTES_TO','HANDLES','USAGE','INHERITS','IMPLEMENTS')) AS out_deg ";
 
     char where[CBM_SZ_2K] = "";
     search_bind_t binds[ST_SEARCH_MAX_BINDS];
