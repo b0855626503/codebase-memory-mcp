@@ -684,15 +684,62 @@ static const char *strip_and_validate_string_arg(CBMArena *a, char *text) {
     return text;
 }
 
+/* Extract the class name from a ::class expression (Sprint N1a).
+ * "Foo\\Bar\\Repository::class" → "Foo\\Bar\\Repository"
+ * Returns arena-allocated name or NULL. */
+static const char *try_extract_class_constant(CBMArena *a, char *text) {
+    if (!text) return NULL;
+    int text_len = (int)strlen(text);
+    const char suffix[] = "::class";
+    const int suffix_len = (int)sizeof(suffix) - 1; /* 7 */
+    if (text_len <= suffix_len) return NULL;
+    if (strcmp(text + text_len - suffix_len, suffix) != 0) return NULL;
+    int name_len = text_len - suffix_len;
+    if (name_len <= 0 || name_len >= MAX_STRING_ARG_LEN) return NULL;
+    return cbm_arena_strndup(a, text, (size_t)name_len);
+}
+
+/* Unwrap an 'argument' wrapper node to get the inner expression.
+ * Many tree-sitter grammars (PHP, Python, TS, etc.) wrap each argument
+ * in an 'argument' node. Returns the inner expression node, or the
+ * original node if it's not an argument wrapper. */
+static TSNode unwrap_argument(TSNode node) {
+    const char *ak = ts_node_type(node);
+    if (strcmp(ak, "argument") == 0) {
+        uint32_t nc = ts_node_named_child_count(node);
+        for (uint32_t i = 0; i < nc; i++) {
+            TSNode child = ts_node_named_child(node, i);
+            const char *ck = ts_node_type(child);
+            /* Skip variadic_placeholder etc., return the first real expression */
+            if (strcmp(ck, "variadic_placeholder") != 0) {
+                return child;
+            }
+        }
+    }
+    return node;
+}
+
 // Extract first string argument from a call's arguments node.
 static const char *extract_first_string_arg(CBMExtractCtx *ctx, TSNode args) {
     uint32_t nc = ts_node_named_child_count(args);
     for (uint32_t ai = 0; ai < nc && ai < MAX_POSITIONAL_SCAN; ai++) {
         TSNode arg = ts_node_named_child(args, ai);
+        /* Unwrap 'argument' wrapper (used by PHP, Python, TS, etc.) */
+        arg = unwrap_argument(arg);
         const char *ak = ts_node_type(arg);
         if (is_string_like(ak)) {
             char *text = cbm_node_text(ctx->arena, arg, ctx->source);
             return strip_and_validate_string_arg(ctx->arena, text);
+        }
+        /* Sprint N1a: Detect PHP ::class constant resolution.
+         * app(Foo\\Bar\\Repository::class) → tree-sitter parses ::class
+         * as a 'name' or 'class_constant_access' node, not a string.
+         * Extract the class name part so the container resolution pass
+         * can redirect the CALLS edge to the actual class. */
+        if (strcmp(ak, "name") == 0 || strcmp(ak, "class_constant_access") == 0) {
+            char *text = cbm_node_text(ctx->arena, arg, ctx->source);
+            const char *cn = try_extract_class_constant(ctx->arena, text);
+            if (cn) return cn;
         }
     }
     return NULL;
