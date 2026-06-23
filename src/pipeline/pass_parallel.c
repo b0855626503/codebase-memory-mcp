@@ -1812,10 +1812,9 @@ static void resolve_file_calls(resolve_ctx_t *rc, resolve_worker_state_t *ws, CB
                 res.candidate_count = 1;
                 ws->lsp_overrides++;
             }
-        } else if (call->first_string_arg && call->first_string_arg[0] &&
-                   (strcmp(call->callee_name, "app") == 0 ||
-                    strcmp(call->callee_name, "resolve") == 0 ||
-                    strcmp(call->callee_name, "make") == 0)) {
+        } else if (strcmp(call->callee_name, "app") == 0 ||
+                   strcmp(call->callee_name, "resolve") == 0 ||
+                   strcmp(call->callee_name, "make") == 0) {
             /* Sprint N: Container resolution.
              * app('Gametech\\Payment\\Repositories\\BillRepository')->create(...)
              * app(BillRepository::class)->create(...)   [Sprint N1a]
@@ -1829,6 +1828,19 @@ static void resolve_file_calls(resolve_ctx_t *rc, resolve_worker_state_t *ws, CB
              *   3. Namespace proximity (count matching leading segments)
              * No substring fallback: 0 false positives from Sprint L. */
             const char *class_str = call->first_string_arg;
+            /* N1a fallback: extract class name from ::class arg expression */
+            if (!class_str || !class_str[0]) {
+                if (call->arg_count > 0 && call->args[0].expr) {
+                    const char *e = call->args[0].expr;
+                    const char *sfx = "::class";
+                    int elen = (int)strlen(e);
+                    int slen = 7;
+                    if (elen > slen && strcmp(e + elen - slen, sfx) == 0) {
+                        class_str = strndup(e, (size_t)(elen - slen));
+                    }
+                }
+            }
+            if (class_str && class_str[0]) {
             /* Strip leading backslash if present */
             if (class_str[0] == '\\') class_str++;
             /* Try registry lookup by bare class name (last segment) */
@@ -1847,8 +1859,10 @@ static void resolve_file_calls(resolve_ctx_t *rc, resolve_worker_state_t *ws, CB
                         continue;
 
                     /* Tier 1: Exact bare name match — last segment must be identical.
+                     * QN uses '.' as separator; class_str may use '\' or '.'.
                      * Rejects: FooRepository vs SpecialFooRepository substring matches. */
-                    const char *cand_bare = strrchr(cands[ci], '\\');
+                    const char *cand_bare = strrchr(cands[ci], '.');
+                    if (!cand_bare) cand_bare = strrchr(cands[ci], '\\');
                     cand_bare = cand_bare ? cand_bare + 1 : cands[ci];
                     if (strcmp(cand_bare, bare) != 0) continue;
 
@@ -1891,6 +1905,7 @@ static void resolve_file_calls(resolve_ctx_t *rc, resolve_worker_state_t *ws, CB
             if (!res.qualified_name || res.qualified_name[0] == '\0') {
                 /* Fall through: let it resolve to 'app' helper as before */
             }
+            } /* close if (class_str && class_str[0]) */
         }
         if (!res.qualified_name || res.qualified_name[0] == '\0') {
             /* Constructor-injection resolution: $this->property->method().

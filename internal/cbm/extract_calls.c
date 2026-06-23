@@ -699,20 +699,22 @@ static const char *try_extract_class_constant(CBMArena *a, char *text) {
     return cbm_arena_strndup(a, text, (size_t)name_len);
 }
 
-/* Unwrap an 'argument' wrapper node to get the inner expression.
+/* Unwrap argument and expression wrapper nodes.
  * Many tree-sitter grammars (PHP, Python, TS, etc.) wrap each argument
- * in an 'argument' node. Returns the inner expression node, or the
- * original node if it's not an argument wrapper. */
+ * in `argument` → `expression` → actual value. Unwrap both layers so
+ * the inner node type is directly inspectable. Returns the innermost
+ * expression node, or the original node if no wrapping applies. */
 static TSNode unwrap_argument(TSNode node) {
     const char *ak = ts_node_type(node);
-    if (strcmp(ak, "argument") == 0) {
+    if (strcmp(ak, "argument") == 0 || strcmp(ak, "expression") == 0) {
         uint32_t nc = ts_node_named_child_count(node);
         for (uint32_t i = 0; i < nc; i++) {
             TSNode child = ts_node_named_child(node, i);
             const char *ck = ts_node_type(child);
             /* Skip variadic_placeholder etc., return the first real expression */
             if (strcmp(ck, "variadic_placeholder") != 0) {
-                return child;
+                /* Recurse: expression may wrap another expression */
+                return unwrap_argument(child);
             }
         }
     }
@@ -1081,8 +1083,12 @@ static const char *extract_url_or_topic_arg(CBMExtractCtx *ctx, TSNode args) {
     for (uint32_t ai = 0; ai < nc; ai++) {
         TSNode arg = ts_node_named_child(args, ai);
         /* PHP and C# wrap each positional argument in an `argument` node;
-         * unwrap to the underlying value so the URL string is reachable. */
+         * unwrap to the underlying value so the URL string is reachable.
+         * PHP also wraps expressions in an `expression` node inside argument. */
         if (strcmp(ts_node_type(arg), "argument") == 0 && ts_node_named_child_count(arg) > 0) {
+            arg = ts_node_named_child(arg, 0);
+        }
+        if (strcmp(ts_node_type(arg), "expression") == 0 && ts_node_named_child_count(arg) > 0) {
             arg = ts_node_named_child(arg, 0);
         }
         const char *ak = ts_node_type(arg);
@@ -1103,6 +1109,16 @@ static const char *extract_url_or_topic_arg(CBMExtractCtx *ctx, TSNode args) {
             if (val) {
                 return val;
             }
+        }
+
+        /* Sprint N1a: Detect PHP ::class constant before falling through
+         * to generic URL/topic string extraction. Container calls like
+         * app(Foo\\Bar::class) need the class name in first_string_arg
+         * so the container resolution pass can redirect the edge. */
+        if (strcmp(ak, "name") == 0 || strcmp(ak, "class_constant_access") == 0) {
+            char *text = cbm_node_text(ctx->arena, arg, ctx->source);
+            const char *cn = try_extract_class_constant(ctx->arena, text);
+            if (cn) return cn;
         }
 
         if (ai < MAX_POSITIONAL_SCAN) {
