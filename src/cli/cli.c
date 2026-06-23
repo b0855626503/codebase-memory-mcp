@@ -8,6 +8,10 @@
 #include "foundation/compat.h"
 #include "foundation/platform.h"
 #include "foundation/constants.h"
+#include "discover/userconfig.h"
+#include "foundation/log.h"
+
+#include <unistd.h> /* getcwd */
 
 /* CLI buffer size constants. */
 enum {
@@ -2589,6 +2593,84 @@ int cbm_config_delete(cbm_config_t *cfg, const char *key) {
     return rc;
 }
 
+/* ── Config show helper ──────────────────────────────────────── */
+
+/* Print a signal line for --effective mode. */
+static void print_signal(const char *name, bool val, bool last) {
+    printf("      \"%s\": %s%s\n", name, val ? "true" : "false", last ? "" : ",");
+}
+
+static int cmd_config_show(int argc, char **argv) {
+    bool effective = false;
+    const char *repo_path = NULL;
+
+    /* Parse flags + optional repo path */
+    for (int i = 1; i < argc; i++) {
+        if (strcmp(argv[i], "--effective") == 0) {
+            effective = true;
+        } else if (argv[i][0] != '-') {
+            repo_path = argv[i];
+        }
+    }
+
+    /* Auto-detect repo from cwd if not specified */
+    char cwd_buf[CLI_BUF_1K];
+    if (!repo_path) {
+        if (getcwd(cwd_buf, sizeof(cwd_buf))) {
+            repo_path = cwd_buf;
+        }
+    }
+
+    /* Load merged userconfig (fail-open: NULL = defaults only) */
+    cbm_userconfig_t *uc = cbm_userconfig_load(repo_path);
+    const cbm_embedding_config_t *ec = uc ? &uc->embedding : NULL;
+
+    /* If no userconfig loaded and we just need defaults, get fallback */
+    if (!ec) {
+        ec = cbm_embedding_config_get(); /* static fallback */
+    }
+
+    printf("{\n");
+    printf("  \"version\": %d,\n", uc ? uc->version : CBM_USERCONFIG_CURRENT_VERSION);
+    printf("  \"embedding\": {\n");
+    printf("    \"enabled\": %s,\n", ec->enabled ? "true" : "false");
+
+    if (ec->profile[0]) {
+        printf("    \"profile\": \"%s\",\n", ec->profile);
+    }
+
+    if (effective) {
+        /* Show effective signals (resolved after profile + overrides) */
+        printf("    \"effective\": {\n");
+        print_signal("label",        ec->signals.label,        false);
+        print_signal("calls",        ec->signals.calls,        false);
+        print_signal("called_by",    ec->signals.called_by,    false);
+        print_signal("routes_to",    ec->signals.routes_to,    false);
+        print_signal("inherits",     ec->signals.inherits,     false);
+        print_signal("parent_class", ec->signals.parent_class, true);
+        printf("    },\n");
+    } else {
+        /* Show configured context (raw) */
+        printf("    \"context\": {\n");
+        print_signal("label",        ec->signals.label,        false);
+        print_signal("calls",        ec->signals.calls,        false);
+        print_signal("called_by",    ec->signals.called_by,    false);
+        print_signal("routes_to",    ec->signals.routes_to,    false);
+        print_signal("inherits",     ec->signals.inherits,     false);
+        print_signal("parent_class", ec->signals.parent_class, true);
+        printf("    },\n");
+    }
+
+    printf("    \"limits\": {\n");
+    printf("      \"max_names_per_direction\": %d\n", ec->limits.max_names_per_direction);
+    printf("    }\n");
+    printf("  }\n");
+    printf("}\n");
+
+    cbm_userconfig_free(uc);
+    return 0;
+}
+
 /* ── Config CLI subcommand ────────────────────────────────────── */
 
 int cbm_cmd_config(int argc, char **argv) {
@@ -2598,7 +2680,9 @@ int cbm_cmd_config(int argc, char **argv) {
         printf("  list             Show all config values\n");
         printf("  get <key>        Get a config value\n");
         printf("  set <key> <val>  Set a config value\n");
-        printf("  reset <key>      Reset a key to default\n\n");
+        printf("  reset <key>      Reset a key to default\n");
+        printf("  show [--effective] [repo-path]\n");
+        printf("                   Show .codebase-memory.json as JSON\n\n");
         printf("Config keys:\n");
         printf("  %-25s  default=%-10s  %s\n", CBM_CONFIG_AUTO_INDEX, "false",
                "Enable auto-indexing on MCP session start");
@@ -2656,6 +2740,10 @@ int cbm_cmd_config(int argc, char **argv) {
             cbm_config_delete(cfg, argv[CLI_SKIP_ONE]);
             printf("%s reset to default\n", argv[CLI_SKIP_ONE]);
         }
+    } else if (strcmp(argv[0], "show") == 0) {
+        /* Display userconfig (global + project) as JSON.
+         * Flags: --effective (show resolved signals after profile+overrides) */
+        rc = cmd_config_show(argc, argv);
     } else {
         (void)fprintf(stderr, "Unknown config command: %s\n", argv[0]);
         rc = CLI_TRUE;
