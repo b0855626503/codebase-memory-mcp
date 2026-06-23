@@ -1818,9 +1818,16 @@ static void resolve_file_calls(resolve_ctx_t *rc, resolve_worker_state_t *ws, CB
                     strcmp(call->callee_name, "make") == 0)) {
             /* Sprint N: Container resolution.
              * app('Gametech\\Payment\\Repositories\\BillRepository')->create(...)
-             *   → callee_name = "app"
-             *   → first_string_arg = "Gametech\\Payment\\Repositories\\BillRepository"
-             *   → Look up BillRepository in registry → create CALLS edge to that class */
+             * app(BillRepository::class)->create(...)   [Sprint N1a]
+             *   → callee_name = "app" / "resolve" / "make"
+             *   → first_string_arg = class name (from string or ::class)
+             *   → Look up BillRepository in registry → create CALLS edge to that class
+             *
+             * Tiered matching (N1b — prevent false positives):
+             *   1. Exact bare name (last segment must match exactly)
+             *   2. Exact QN match (full namespace + name)
+             *   3. Namespace proximity (count matching leading segments)
+             * No substring fallback: 0 false positives from Sprint L. */
             const char *class_str = call->first_string_arg;
             /* Strip leading backslash if present */
             if (class_str[0] == '\\') class_str++;
@@ -1831,20 +1838,54 @@ static void resolve_file_calls(resolve_ctx_t *rc, resolve_worker_state_t *ws, CB
             int cand_count = 0;
             cbm_registry_find_by_name(rc->registry, bare, &cands, &cand_count);
             if (cand_count > 0) {
-                /* Find Class/Interface candidate matching the full namespace */
+                int best_score = -1;
+                int best_ci = -1;
+                /* Scan all candidates, keep the best by tiered scoring */
                 for (int ci = 0; ci < cand_count; ci++) {
                     const char *label = cbm_registry_label_of(rc->registry, cands[ci]);
                     if (!label || (strcmp(label, "Class") != 0 && strcmp(label, "Interface") != 0))
                         continue;
-                    /* Match: candidate QN should contain the class_str */
-                    if (strstr(cands[ci], bare)) {
-                        res.qualified_name = cands[ci];
-                        res.strategy = "container_resolve";
-                        res.confidence = 0.85;
-                        res.candidate_count = 1;
-                        ws->lsp_overrides++; /* count as resolved */
-                        break;
+
+                    /* Tier 1: Exact bare name match — last segment must be identical.
+                     * Rejects: FooRepository vs SpecialFooRepository substring matches. */
+                    const char *cand_bare = strrchr(cands[ci], '\\');
+                    cand_bare = cand_bare ? cand_bare + 1 : cands[ci];
+                    if (strcmp(cand_bare, bare) != 0) continue;
+
+                    int score = 0;
+
+                    /* Tier 2: Exact QN match (highest confidence) */
+                    if (strcmp(cands[ci], class_str) == 0) {
+                        score = 200;
+                    } else {
+                        /* Tier 3: Namespace proximity — count matching
+                         * leading segments. More shared segments = closer
+                         * namespace = more likely correct. */
+                        const char *cs = class_str;
+                        const char *cq = cands[ci];
+                        while (*cs && *cq && *cs == *cq) {
+                            if (*cs == '\\') score++;
+                            cs++; cq++;
+                        }
+                        /* Require both to end at a segment boundary */
+                        if ((*cs == '\\' || *cs == '\0') && (*cq == '\\' || *cq == '\0')) {
+                            /* Keep score from shared segments */;
+                        } else {
+                            score = 0; /* mid-segment break = no namespace match */
+                        }
                     }
+
+                    if (score > best_score) {
+                        best_score = score;
+                        best_ci = ci;
+                    }
+                }
+                if (best_ci >= 0) {
+                    res.qualified_name = cands[best_ci];
+                    res.strategy = "container_resolve";
+                    res.confidence = 0.85;
+                    res.candidate_count = 1;
+                    ws->lsp_overrides++; /* count as resolved */
                 }
             }
             if (!res.qualified_name || res.qualified_name[0] == '\0') {
