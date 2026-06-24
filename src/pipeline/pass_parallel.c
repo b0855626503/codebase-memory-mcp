@@ -2119,19 +2119,27 @@ static void resolve_file_calls(resolve_ctx_t *rc, resolve_worker_state_t *ws, CB
                          * cause false positives via unique_name, but allow specific
                          * names like debit, redeem, register, join. */
                         if (!is_common_method_name(call->callee_name)) {
-                            /* Strip receiver prefix from callee_name before
-                             * registry lookup. callee_name may be "$this.points.debit"
-                             * which cbm_registry_is_unresolved_receiver_prefix blocks.
-                             * Extract bare method name (last segment after '.' or '>'). */
-                            const char *bare = call->callee_name;
-                            const char *dot = strrchr(bare, '.');
-                            const char *arrow = strrchr(bare, '>');
-                            if (dot && dot > bare) bare = dot + 1;
-                            if (arrow && arrow > bare) bare = arrow + 1;
-                            res = cbm_registry_resolve(rc->registry, bare,
-                                                       module_qn, imp_keys, imp_vals, imp_count);
+                            /* Strip receiver prefix before registry lookup.
+                             * callee_name may be "$this.points.debit" which
+                             * cbm_registry_is_unresolved_receiver_prefix blocks.
+                             * Skip complex expressions: property accesses ($x.prop),
+                             * constructor calls (new Foo()), closure syntax,
+                             * variable references — these aren't method calls. */
+                            const char *orig = call->callee_name;
+                            bool is_complex = (strchr(orig, '$') || strchr(orig, '(') ||
+                                strstr(orig, "new ") || orig[0] == '\\' ||
+                                strstr(orig, "clone ") || strstr(orig, "function ("));
+                            if (!is_complex) {
+                                const char *bare = orig;
+                                const char *dot = strrchr(bare, '.');
+                                const char *arrow = strrchr(bare, '>');
+                                if (dot && dot > bare) bare = dot + 1;
+                                if (arrow && arrow > bare) bare = arrow + 1;
+                                res = cbm_registry_resolve(rc->registry, bare,
+                                                           module_qn, imp_keys, imp_vals, imp_count);
+                            }
                             if (res.qualified_name && res.qualified_name[0] &&
-                                res.confidence >= 0.55) {
+                                res.confidence >= 0.65) { /* final ≥ 0.55 after 0.85 penalty */
                                 res.strategy = "member_registry_fallback";
                                 res.confidence *= 0.85; /* penalize for lack of type evidence */
                             } else {

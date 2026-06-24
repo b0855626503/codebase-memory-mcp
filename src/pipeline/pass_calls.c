@@ -599,16 +599,24 @@ static int resolve_single_call(cbm_pipeline_ctx_t *ctx, CBMCall *call,
          * if the method name is specific enough. Block common names (create, find,
          * get, handle...) that cause false positives via unique_name. */
         if (!is_common_method_name(call->callee_name)) {
-            /* Strip receiver prefix: "$this.points.debit" → "debit" */
-            const char *bare = call->callee_name;
-            const char *dot = strrchr(bare, '.');
-            const char *arrow = strrchr(bare, '>');
-            if (dot && dot > bare) bare = dot + 1;
-            if (arrow && arrow > bare) bare = arrow + 1;
-            cbm_resolution_t res = cbm_registry_resolve(ctx->registry, bare,
-                                                        module_qn, imp_keys, imp_vals, imp_count);
+            /* Strip receiver prefix: "$this.points.debit" → "debit".
+             * Skip complex expressions: property accesses, constructor calls. */
+            const char *orig = call->callee_name;
+            bool is_complex = (strchr(orig, '$') || strchr(orig, '(') ||
+                strstr(orig, "new ") || orig[0] == '\\' ||
+                strstr(orig, "clone ") || strstr(orig, "function ("));
+            cbm_resolution_t res = {0};
+            if (!is_complex) {
+                const char *bare = orig;
+                const char *dot = strrchr(bare, '.');
+                const char *arrow = strrchr(bare, '>');
+                if (dot && dot > bare) bare = dot + 1;
+                if (arrow && arrow > bare) bare = arrow + 1;
+                res = cbm_registry_resolve(ctx->registry, bare,
+                                           module_qn, imp_keys, imp_vals, imp_count);
+            }
             if (res.qualified_name && res.qualified_name[0] &&
-                res.confidence >= 0.55) {
+                res.confidence >= 0.65) { /* final ≥ 0.55 after 0.85 penalty */
                 res.strategy = "member_registry_fallback";
                 res.confidence *= 0.85;
                 const cbm_gbuf_node_t *tgt = cbm_gbuf_find_by_qn(ctx->gbuf, res.qualified_name);
