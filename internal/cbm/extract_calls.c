@@ -906,7 +906,7 @@ static CBMCall lst_process_node(CBMExtractCtx *ctx, TSNode node,
                             }
                             if (tp && mn) {
                                 CBMCall call = {0};
-                                call.callee_name = cbm_arena_sprintf(ctx->arena, "%s.%s", tp, mn);
+                                call.callee_name = cbm_arena_sprintf(ctx->arena, "__lst__%s.%s", tp, mn);
                                 call.receiver_expr = cbm_arena_strdup(ctx->arena, tp);
                                 call.enclosing_func_qn = cbm_enclosing_func_qn_cached(ctx, node);
                                 call.start_line = (int)ts_node_start_point(node).row + 1;
@@ -919,7 +919,7 @@ static CBMCall lst_process_node(CBMExtractCtx *ctx, TSNode node,
                 const char *tp2 = lst_lookup(tab, vn);
                 if (tp2 && mn) {
                     CBMCall call = {0};
-                    call.callee_name = cbm_arena_sprintf(ctx->arena, "%s.%s", tp2, mn);
+                    call.callee_name = cbm_arena_sprintf(ctx->arena, "__lst__%s.%s", tp2, mn);
                     call.receiver_expr = cbm_arena_strdup(ctx->arena, tp2);
                     call.enclosing_func_qn = cbm_enclosing_func_qn_cached(ctx, node);
                     call.start_line = (int)ts_node_start_point(node).row + 1;
