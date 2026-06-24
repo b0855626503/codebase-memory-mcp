@@ -860,17 +860,51 @@ static const char *lst_lookup(CBMLocalSymTab *t, const char *var) {
  * if successful, NULL to fall through to normal pipeline. */
 static CBMCall lst_process_node(CBMExtractCtx *ctx, TSNode node,
                                  CBMLocalSymTab *tab, const char *nk) {
-    /* Case A: $model = new User() → track assignment */
+    /* Case A: $model = new User() OR $model = $repo->find() → track assignment */
     if (strcmp(nk, "assignment_expression") == 0) {
         TSNode left = ts_node_child_by_field_name(node, TS_FIELD("left"));
         TSNode right = ts_node_child_by_field_name(node, TS_FIELD("right"));
         if (!ts_node_is_null(left) && !ts_node_is_null(right)) {
             const char *rk = ts_node_type(right);
+            char *vn = cbm_node_text(ctx->arena, left, ctx->source);
+            /* Direct constructor: $model = new User() */
             if (strcmp(rk, "object_creation_expression") == 0 ||
                 strcmp(rk, "new_expression") == 0) {
-                char *vn = cbm_node_text(ctx->arena, left, ctx->source);
                 char *cn = extract_constructor_callee(ctx->arena, right, ctx->source, rk);
                 if (vn && cn) lst_insert(tab, vn, cn);
+            }
+            /* Method call return: $model = $repo->find()
+             * Infer type from receiver variable name via naming convention:
+             * $userRepo → strip Repo/Repository/Service → capitalize → User */
+            else if (strcmp(rk, "member_call_expression") == 0 && vn) {
+                TSNode robj = ts_node_child_by_field_name(right, TS_FIELD("object"));
+                if (!ts_node_is_null(robj)) {
+                    char *rv = cbm_node_text(ctx->arena, robj, ctx->source);
+                    if (rv) {
+                        const char *rv2 = lst_strip_dollar(rv);
+                        char buf[CBM_LST_MAX_NAME];
+                        strncpy(buf, rv2, sizeof(buf) - 1); buf[sizeof(buf)-1] = '\0';
+                        size_t bl = strlen(buf);
+                        if (bl > 12 && strcmp(buf + bl - 12, "Repository") == 0) buf[bl-12] = '\0';
+                        else if (bl > 10 && strcmp(buf + bl - 10, "Repository") == 0) buf[bl-10] = '\0';
+                        else if (bl > 4 && strcmp(buf + bl - 4, "Repo") == 0) buf[bl-4] = '\0';
+                        else if (bl > 7 && strcmp(buf + bl - 7, "Service") == 0) buf[bl-7] = '\0';
+                        if (buf[0] >= 'a' && buf[0] <= 'z') buf[0] = (char)(buf[0] - 'a' + 'A');
+                        if (buf[0]) lst_insert(tab, vn, buf);
+                    }
+                }
+            }
+            /* Static call return: $model = User::find($id)
+             * Class name before :: is the return type directly */
+            else if ((strcmp(rk, "scoped_call_expression") == 0 ||
+                      strcmp(rk, "static_call_expression") == 0) && vn) {
+                TSNode scope = ts_node_child_by_field_name(right, TS_FIELD("scope"));
+                if (ts_node_is_null(scope))
+                    scope = ts_node_child_by_field_name(right, TS_FIELD("class"));
+                if (!ts_node_is_null(scope)) {
+                    char *cn = cbm_node_text(ctx->arena, scope, ctx->source);
+                    if (cn) lst_insert(tab, vn, cn);
+                }
             }
         }
         return (CBMCall){0};
