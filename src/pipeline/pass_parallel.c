@@ -1720,7 +1720,14 @@ static void emit_service_edge(cbm_gbuf_t *gbuf, const cbm_gbuf_node_t *source,
                                     registry, main_gbuf, imp_keys, imp_vals, imp_count);
             return;
         }
-        /* No path found — fall through to normal CALLS edge */
+        /* No path found. When source==target (unresolved callee fallback
+         * at line 2329), skip — a CALLS self-loop carries zero signal.
+         * For resolved targets, fall through to emit_normal_calls_edge
+         * (e.g. Route::getRoutes() without a path is a real method call). */
+        if (source->id == target->id) {
+            return;
+        }
+        /* Fall through to normal CALLS edge for resolved targets */
     }
 
     bool has_url = (arg && arg[0] != '\0' && (arg[0] == '/' || strstr(arg, "://") != NULL));
