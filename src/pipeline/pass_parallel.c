@@ -1914,39 +1914,6 @@ static void resolve_file_calls(resolve_ctx_t *rc, resolve_worker_state_t *ws, CB
             continue;
         }
 
-        /* Constructor calls (new Model()): callee_name = "__ctor__ClassName".
-         * Bypass registry — emit USES_MODEL directly via registry→gbuf lookup. */
-        if (call->callee_name && strncmp(call->callee_name, "__ctor__", 8) == 0) {
-            const char *cn = call->callee_name + 8;
-            if (cn[0]) {
-                const char *bare = strrchr(cn, '\\');
-                bare = bare ? bare + 1 : cn;
-                const char *dot = strrchr(bare, '.');
-                if (dot) bare = dot + 1;
-                const char **cands = NULL;
-                int nc = 0;
-                cbm_registry_find_by_name(rc->registry, bare, &cands, &nc);
-                for (int ci = 0; ci < nc; ci++) {
-                    const char *label = cbm_registry_label_of(rc->registry, cands[ci]);
-                    if (!label || strcmp(label, "Class") != 0) continue;
-                    const cbm_gbuf_node_t *cls = cbm_gbuf_find_by_qn(rc->main_gbuf, cands[ci]);
-                    if (!cls || !cls->file_path) continue;
-                    if (!strstr(cls->file_path, "/Models/") &&
-                        !strstr(cls->file_path, "\\Models\\")) continue;
-                    if (strstr(source_node->file_path, "test") != NULL) continue;
-                    char mp[CBM_SZ_512];
-                    snprintf(mp, sizeof(mp),
-                        "{\"model\":\"%s\",\"edge_type\":\"USES_MODEL\",\"via\":\"constructor\"}",
-                        cls->name ? cls->name : "");
-                    cbm_gbuf_insert_edge(ws->local_edge_buf, source_node->id,
-                        cls->id, "USES_MODEL", mp);
-                    ws->calls_resolved++;
-                    break;
-                }
-            }
-            continue;
-        }
-
         /* LSP-resolved calls take precedence over registry textual matching.
          * Same helper + same CBM_LSP_CONFIDENCE_FLOOR as the sequential
          * pipeline (pass_calls.c) — both paths must admit the same set of

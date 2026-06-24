@@ -799,18 +799,21 @@ static void walk_calls(CBMExtractCtx *ctx, TSNode root, const CBMLangSpec *spec)
         TSNode node = ts_nstack_pop(&stack);
         const char *kind = ts_node_type(node);
 
-        /* Bypass call pipeline for constructor calls — emit as __ctor__ for USES_MODEL */
+        /* Bypass call pipeline: constructor calls → __ctor__ for USES_MODEL */
         const char *nk2 = ts_node_type(node);
-        if (strcmp(nk2, "object_creation_expression") == 0 ||
-            strcmp(nk2, "new_expression") == 0) {
+        if (nk2 && (strcmp(nk2, "object_creation_expression") == 0 ||
+                    strcmp(nk2, "new_expression") == 0)) {
             char *tn = extract_constructor_callee(ctx->arena, node, ctx->source, nk2);
-            if (tn && tn[0]) {
-                CBMCall call = {0};
-                call.callee_name = cbm_arena_sprintf(ctx->arena, "__ctor__%s", tn);
-                call.enclosing_func_qn = cbm_enclosing_func_qn_cached(ctx, node);
-                call.receiver_expr = tn;
-                call.start_line = (int)ts_node_start_point(node).row + 1;
-                cbm_calls_push(&ctx->result->calls, ctx->arena, call);
+            if (tn && tn[0] && ctx->arena) {
+                char *cn = cbm_arena_sprintf(ctx->arena, "__ctor__%s", tn);
+                if (cn) {
+                    CBMCall call = {0};
+                    call.callee_name = cn;
+                    call.receiver_expr = tn;
+                    call.enclosing_func_qn = cbm_enclosing_func_qn_cached(ctx, node);
+                    call.start_line = (int)ts_node_start_point(node).row + 1;
+                    cbm_calls_push(&ctx->result->calls, ctx->arena, call);
+                }
             }
         }
 
