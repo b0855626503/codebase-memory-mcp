@@ -319,6 +319,26 @@ static void emit_classified_edge(cbm_pipeline_ctx_t *ctx, const CBMCall *call,
         return;
     }
 
+    /* suffix_match produces ~161-165 edges with ~55% precision.
+     * Gate: skip when >3 candidates match the suffix — too many
+     * alternatives = low precision for any single target. */
+    if (res->strategy && strcmp(res->strategy, "suffix_match") == 0 &&
+        res->candidate_count > 3) {
+        return;
+    }
+
+    /* unique_name cross-file edges with confidence < 0.70 are
+     * unreliable — equivalent to the query-time cross-file filter
+     * from R5 arch_hotspots, applied at indexing time. In-package
+     * same-file unique_name matches (e.g. sibling functions in the
+     * same file) are still allowed. */
+    if (res->strategy && strcmp(res->strategy, "unique_name") == 0 &&
+        res->confidence < 0.70 &&
+        source->file_path && target->file_path &&
+        strcmp(source->file_path, target->file_path) != 0) {
+        return;
+    }
+
     snprintf(props, sizeof(props),
              "{\"callee\":\"%s\",\"confidence\":%.2f,\"strategy\":\"%s\",\"candidates\":%d}",
              esc_c2, res->confidence, res->strategy ? res->strategy : "unknown",
