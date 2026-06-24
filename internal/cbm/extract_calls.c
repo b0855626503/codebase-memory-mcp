@@ -189,8 +189,15 @@ static char *extract_constructor_callee(CBMArena *a, TSNode node, const char *so
 
     if (!ts_node_is_null(tn)) {
         const char *tk = ts_node_type(tn);
+        /* Descend through wrapper nodes to reach the actual identifier */
         if (strcmp(tk, "generic_type") == 0 && ts_node_named_child_count(tn) > 0) {
             tn = ts_node_named_child(tn, 0);
+        } else if (strcmp(tk, "name") == 0 && ts_node_named_child_count(tn) > 0) {
+            /* PHP: type: (name (identifier)) — descend into name */
+            tn = ts_node_named_child(tn, 0);
+        } else if (strcmp(tk, "qualified_name") == 0 && ts_node_child_count(tn) > 0) {
+            /* PHP namespaced: type: (qualified_name (name ...)) */
+            tn = ts_node_child(tn, ts_node_child_count(tn) - 1);
         }
         char *t = strip_generic_args(cbm_node_text(a, tn, source));
         if (t && t[0]) return t;
@@ -819,7 +826,14 @@ typedef struct {
 
 static void lst_clear(CBMLocalSymTab *t) { t->count = 0; }
 
+/* Strip leading $ from variable name for normalized table lookups */
+static const char *lst_strip_dollar(const char *v) {
+    if (v && v[0] == '$') return v + 1;
+    return v;
+}
+
 static void lst_insert(CBMLocalSymTab *t, const char *var, const char *type) {
+    var = lst_strip_dollar(var);
     if (!var || !type || t->count >= CBM_LST_MAX_SYMBOLS) return;
     for (int i = 0; i < t->count; i++) {
         if (strcmp(t->vars[i].var_name, var) == 0) {
@@ -833,6 +847,7 @@ static void lst_insert(CBMLocalSymTab *t, const char *var, const char *type) {
 }
 
 static const char *lst_lookup(CBMLocalSymTab *t, const char *var) {
+    var = lst_strip_dollar(var);
     if (!var) return NULL;
     for (int i = 0; i < t->count; i++) {
         if (strcmp(t->vars[i].var_name, var) == 0) return t->vars[i].type_name;
