@@ -178,8 +178,9 @@ int cbm_pipeline_pass_model_ownership(cbm_pipeline_ctx_t *ctx,
                  "found_eloquent", "yes");
 
     /* Step 2: For each Eloquent Model class, find CALLS edges targeting it
-     * and emit USES_MODEL edges from the caller to the model. */
+     * and emit USES_MODEL (Models/ dir) or USES_REPOSITORY edges. */
     int us_es_model_count = 0;
+    int us_es_repo_count = 0;
 
     for (int m = 0; m < model_count; m++) {
         const cbm_gbuf_edge_t **calls = NULL;
@@ -200,14 +201,20 @@ int cbm_pipeline_pass_model_ownership(cbm_pipeline_ctx_t *ctx,
             /* Skip edges from test files */
             if (source->file_path && strstr(source->file_path, "test") != NULL) continue;
 
-            /* Emit USES_MODEL edge with the CALLS confidence and strategy */
+            /* Classify: Models/ dir → USES_MODEL, otherwise → USES_REPOSITORY */
+            bool is_model = (model_node->file_path &&
+                (strstr(model_node->file_path, "/Models/") != NULL ||
+                 strstr(model_node->file_path, "\\Models\\") != NULL));
+            const char *edge_type = is_model ? "USES_MODEL" : "USES_REPOSITORY";
+            const char *via = is_model ? "injection" : "injection";
+
             char props[CBM_SZ_512];
             snprintf(props, sizeof(props),
-                     "{\"model\":\"%s\",\"edge_type\":\"USES_MODEL\"}",
-                     model_node->name ? model_node->name : "");
+                     "{\"model\":\"%s\",\"edge_type\":\"%s\",\"via\":\"%s\"}",
+                     model_node->name ? model_node->name : "", edge_type, via);
             cbm_gbuf_insert_edge(ctx->gbuf, source->id, model_node->id,
-                                 "USES_MODEL", props);
-            us_es_model_count++;
+                                 edge_type, props);
+            if (is_model) us_es_model_count++; else us_es_repo_count++;
         }
     }
 
@@ -324,9 +331,12 @@ int cbm_pipeline_pass_model_ownership(cbm_pipeline_ctx_t *ctx,
     }
 
     char count_buf[32];
+    char repo_buf[32];
     snprintf(count_buf, sizeof(count_buf), "%d", us_es_model_count);
+    snprintf(repo_buf, sizeof(repo_buf), "%d", us_es_repo_count);
     cbm_log_info("model_ownership", "pass", "us-es_model",
-                 "us_es_model_edges", count_buf,
+                 "us_es_model", count_buf,
+                 "us_es_repo", repo_buf,
                  "done", "yes");
     return 0;
 }
