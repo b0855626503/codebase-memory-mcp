@@ -1,0 +1,28 @@
+{
+  "hooks": {
+    "PostToolUse": [
+      {
+        "matcher": "Edit|Write",
+        "filePattern": "\\.(c|h)$",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "make -f Makefile.cbm cbm -j$(nproc) 2>&1 | tail -5"
+          }
+        ]
+      }
+    ],
+    "PreToolUse": [
+      {
+        "matcher": "Edit|Write",
+        "filePattern": "(vendored/|internal/cbm/lsp/|internal/cbm/vendored/|internal/cbm/grammar)",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "echo 'vendored/internal code — confirm?'"
+          }
+        ]
+      }
+    ]
+  }
+}
