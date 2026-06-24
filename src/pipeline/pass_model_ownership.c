@@ -181,6 +181,7 @@ int cbm_pipeline_pass_model_ownership(cbm_pipeline_ctx_t *ctx,
      * and emit USES_MODEL (Models/ dir) or USES_REPOSITORY edges. */
     int us_es_model_count = 0;
     int us_es_repo_count = 0;
+    int us_es_svc_count = 0;
 
     for (int m = 0; m < model_count; m++) {
         const cbm_gbuf_edge_t **calls = NULL;
@@ -417,7 +418,9 @@ int cbm_pipeline_pass_model_ownership(cbm_pipeline_ctx_t *ctx,
                                 strstr(cands[ci]->file_path, "\\Models\\") != NULL);
                 bool is_repo = (strstr(cands[ci]->file_path, "/Repositories/") != NULL ||
                                strstr(cands[ci]->file_path, "\\Repositories\\") != NULL);
-                if (!is_model && !is_repo) continue;
+                bool is_svc  = (strstr(cands[ci]->file_path, "/Services/") != NULL ||
+                               strstr(cands[ci]->file_path, "\\Services\\") != NULL);
+                if (!is_model && !is_repo && !is_svc) continue;
                 /* Get parent class from Field's parent_class property */
                 const char *pc = strstr(f->properties_json, "\"parent_class\":\"");
                 if (!pc) continue;
@@ -435,12 +438,14 @@ int cbm_pipeline_pass_model_ownership(cbm_pipeline_ctx_t *ctx,
                 }
                 if (!parent || !parent->file_path) continue;
                 if (strstr(parent->file_path, "test") != NULL) continue;
-                const char *edge_type = is_model ? "USES_MODEL" : "USES_REPOSITORY";
+                const char *edge_type = is_model ? "USES_MODEL" : (is_repo ? "USES_REPOSITORY" : "USES_SERVICE");
                 char mp[CBM_SZ_512];
                 snprintf(mp, sizeof(mp), "{\"model\":\"%s\",\"edge_type\":\"%s\",\"via\":\"field_type\"}",
                          cands[ci]->name ? cands[ci]->name : "", edge_type);
                 cbm_gbuf_insert_edge(ctx->gbuf, parent->id, cands[ci]->id, edge_type, mp);
-                if (is_model) us_es_model_count++; else us_es_repo_count++;
+                if (is_model) us_es_model_count++;
+                else if (is_repo) us_es_repo_count++;
+                else us_es_svc_count++;
                 break;
             }
         }
@@ -448,11 +453,14 @@ int cbm_pipeline_pass_model_ownership(cbm_pipeline_ctx_t *ctx,
 
     char count_buf[32];
     char repo_buf[32];
+    char svc_buf[32];
     snprintf(count_buf, sizeof(count_buf), "%d", us_es_model_count);
     snprintf(repo_buf, sizeof(repo_buf), "%d", us_es_repo_count);
+    snprintf(svc_buf, sizeof(svc_buf), "%d", us_es_svc_count);
     cbm_log_info("model_ownership", "pass", "us-es_model",
                  "us_es_model", count_buf,
                  "us_es_repo", repo_buf,
+                 "us_es_svc", svc_buf,
                  "done", "yes");
     return 0;
 }
