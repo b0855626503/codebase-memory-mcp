@@ -1320,7 +1320,10 @@ static void emit_normal_calls_edge(cbm_gbuf_t *gbuf, const cbm_gbuf_node_t *sour
             if (strcmp(cn, "find") == 0 || strcmp(cn, "create") == 0 ||
                 strcmp(cn, "delete") == 0 || strcmp(cn, "get") == 0 ||
                 strcmp(cn, "update") == 0 || strcmp(cn, "first") == 0 ||
-                strcmp(cn, "all") == 0 || strcmp(cn, "save") == 0) {
+                strcmp(cn, "all") == 0 || strcmp(cn, "save") == 0 ||
+                strcmp(cn, "count") == 0 || strcmp(cn, "exists") == 0 ||
+                strcmp(cn, "where") == 0 || strcmp(cn, "insert") == 0 ||
+                strcmp(cn, "paginate") == 0 || strcmp(cn, "sum") == 0) {
                 return;
             }
         }
@@ -1336,11 +1339,22 @@ static void emit_normal_calls_edge(cbm_gbuf_t *gbuf, const cbm_gbuf_node_t *sour
     char esc_c[CBM_SZ_256];
     cbm_json_escape(esc_c, sizeof(esc_c), call->callee_name);
     char props[CBM_SZ_2K];
-    int n = snprintf(props, sizeof(props),
-                     "{\"callee\":\"%s\",\"confidence\":%.2f,\"strategy\":\"%s\",\"candidates\":%d",
+    /* Include receiver_expr so post-pass can extract class name for USES_MODEL */
+    if (call->receiver_expr && call->receiver_expr[0]) {
+        char esc_rx[CBM_SZ_256];
+        cbm_json_escape(esc_rx, sizeof(esc_rx), call->receiver_expr);
+        int n = snprintf(props, sizeof(props),
+                     "{\"callee\":\"%s\",\"confidence\":%.2f,\"strategy\":\"%s\",\"candidates\":%d,\"receiver\":\"%s\"}",
+                     esc_c, res->confidence, res->strategy ? res->strategy : "unknown",
+                     res->candidate_count, esc_rx);
+        finalize_and_emit(gbuf, source->id, target->id, "CALLS", props, n, call);
+    } else {
+        int n = snprintf(props, sizeof(props),
+                     "{\"callee\":\"%s\",\"confidence\":%.2f,\"strategy\":\"%s\",\"candidates\":%d}",
                      esc_c, res->confidence, res->strategy ? res->strategy : "unknown",
                      res->candidate_count);
-    finalize_and_emit(gbuf, source->id, target->id, "CALLS", props, n, call);
+        finalize_and_emit(gbuf, source->id, target->id, "CALLS", props, n, call);
+    }
 }
 
 /* Classify a resolved call by library identity and emit the appropriate edge. */

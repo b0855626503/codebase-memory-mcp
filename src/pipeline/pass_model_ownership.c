@@ -278,6 +278,59 @@ int cbm_pipeline_pass_model_ownership(cbm_pipeline_ctx_t *ctx,
         }
     }
 
+    /* Step 3b: receiver-based Model detection (2-Pass approach).
+     * receiver_expr was stored in edge properties during call resolution.
+     * Now the gbuf is fully populated — we can reliably look up class names.
+     * Catches: SpecialEvent::where() → receiver="SpecialEvent" → USES_MODEL. */
+    if (cbm_gbuf_find_edges_by_type(ctx->gbuf, "CALLS", &all_calls, &all_count) == 0) {
+        for (int i = 0; i < all_count; i++) {
+            const char *props = all_calls[i]->properties_json;
+            if (!props) continue;
+            const char *rk = strstr(props, "\"receiver\":\"");
+            if (!rk) continue;
+            rk += 12; /* skip "receiver":" */
+            const char *re = strchr(rk, '"');
+            if (!re || re <= rk) continue;
+            size_t rlen = (size_t)(re - rk);
+            if (rlen == 0 || rlen >= CBM_SZ_256) continue;
+
+            /* Skip $variable receivers — only interested in ClassName::method() */
+            if (rk[0] == '$' || rk[0] == '(') continue;
+
+            /* Sanitize type name: normalize \ to ., strip * & */
+            char rx[CBM_SZ_256];
+            memcpy(rx, rk, rlen); rx[rlen] = '\0';
+            for (char *p = rx; *p; p++) {
+                if (*p == '\\') *p = '.';
+            }
+            /* Strip trailing * or & (pointer/reference type artifacts) */
+            size_t sl = strlen(rx);
+            while (sl > 0 && (rx[sl-1] == '*' || rx[sl-1] == '&')) rx[--sl] = '\0';
+
+            /* Look up class in fully-populated gbuf */
+            const char *bare = strrchr(rx, '.');
+            bare = bare ? bare + 1 : rx;
+            const cbm_gbuf_node_t **cands = NULL;
+            int nc = 0;
+            cbm_gbuf_find_by_name(ctx->gbuf, bare, &cands, &nc);
+            for (int ci = 0; ci < nc; ci++) {
+                if (!cands[ci]->label || strcmp(cands[ci]->label, "Class") != 0) continue;
+                if (!cands[ci]->file_path) continue;
+                if (!strstr(cands[ci]->file_path, "/Models/") &&
+                    !strstr(cands[ci]->file_path, "\\Models\\")) continue;
+                const cbm_gbuf_node_t *src = cbm_gbuf_find_by_id(ctx->gbuf, all_calls[i]->source_id);
+                if (!src || !src->file_path) continue;
+                if (strstr(src->file_path, "test") != NULL) continue;
+                char mp[CBM_SZ_512];
+                snprintf(mp, sizeof(mp), "{\"model\":\"%s\",\"edge_type\":\"USES_MODEL\",\"via\":\"receiver\"}",
+                         cands[ci]->name ? cands[ci]->name : "");
+                cbm_gbuf_insert_edge(ctx->gbuf, src->id, cands[ci]->id, "USES_MODEL", mp);
+                us_es_model_count++;
+                break;
+            }
+        }
+    }
+
     /* Step 4: php_static_resolved edges targeting Methods on Model classes.
      * Walk DEFINES_METHOD from the method's parent Class; if parent is Eloquent
      * model, create USES_MODEL from caller to the parent Class. */
