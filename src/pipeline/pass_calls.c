@@ -340,7 +340,7 @@ static void emit_classified_edge(cbm_pipeline_ctx_t *ctx, const CBMCall *call,
      * same-file unique_name matches (e.g. sibling functions in the
      * same file) are still allowed. */
     if (res->strategy && strcmp(res->strategy, "unique_name") == 0 &&
-        res->confidence < 0.70 &&
+        res->confidence < 0.50 &&
         source->file_path && target->file_path &&
         strcmp(source->file_path, target->file_path) != 0) {
         return;

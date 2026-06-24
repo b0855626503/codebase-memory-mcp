@@ -1285,13 +1285,12 @@ static void emit_normal_calls_edge(cbm_gbuf_t *gbuf, const cbm_gbuf_node_t *sour
         return;
     }
 
-    /* unique_name cross-file edges with confidence < 0.70 are
-     * unreliable — equivalent to the query-time cross-file filter
-     * from R5 arch_hotspots, applied at indexing time. In-package
-     * same-file unique_name matches (e.g. sibling functions in the
-     * same file) are still allowed. */
+    /* unique_name cross-file: gate only very low confidence (<0.50).
+     * PHP autoloading means import-reachability often fails for
+     * legitimate cross-file calls (0.75×0.67=0.50). R5 had ~2,800
+     * unique_name at 80% precision. Keep >0.50, drop <0.50. */
     if (res->strategy && strcmp(res->strategy, "unique_name") == 0 &&
-        res->confidence < 0.70 &&
+        res->confidence < 0.50 &&
         source->file_path && target->file_path &&
         strcmp(source->file_path, target->file_path) != 0) {
         return;
