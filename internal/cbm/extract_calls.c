@@ -886,11 +886,41 @@ static CBMCall lst_process_node(CBMExtractCtx *ctx, TSNode node,
                         strncpy(buf, rv2, sizeof(buf) - 1); buf[sizeof(buf)-1] = '\0';
                         size_t bl = strlen(buf);
                         if (bl > 12 && strcmp(buf + bl - 12, "Repository") == 0) buf[bl-12] = '\0';
-                        else if (bl > 10 && strcmp(buf + bl - 10, "Repository") == 0) buf[bl-10] = '\0';
                         else if (bl > 4 && strcmp(buf + bl - 4, "Repo") == 0) buf[bl-4] = '\0';
                         else if (bl > 7 && strcmp(buf + bl - 7, "Service") == 0) buf[bl-7] = '\0';
+                        else if (bl > 3 && strcmp(buf + bl - 3, "Svc") == 0) buf[bl-3] = '\0';
+                        else if (bl > 7 && strcmp(buf + bl - 7, "Factory") == 0) buf[bl-7] = '\0';
+                        else if (bl > 7 && strcmp(buf + bl - 7, "Manager") == 0) buf[bl-7] = '\0';
+                        else if (bl > 5 && strcmp(buf + bl - 5, "Store") == 0) buf[bl-5] = '\0';
+                        else if (bl > 8 && strcmp(buf + bl - 8, "Provider") == 0) buf[bl-8] = '\0';
+                        else if (bl > 6 && strcmp(buf + bl - 6, "Client") == 0) buf[bl-6] = '\0';
+                        else if (bl > 6 && strcmp(buf + bl - 6, "Mapper") == 0) buf[bl-6] = '\0';
+                        else if (bl > 7 && strcmp(buf + bl - 7, "Gateway") == 0) buf[bl-7] = '\0';
+                        else if (bl > 7 && strcmp(buf + bl - 7, "Handler") == 0) buf[bl-7] = '\0';
                         if (buf[0] >= 'a' && buf[0] <= 'z') buf[0] = (char)(buf[0] - 'a' + 'A');
                         if (buf[0]) lst_insert(tab, vn, buf);
+                        else {
+                            /* Method name fallback: createUser() → User,
+                             * makeOrder() → Order, getProduct() → Product */
+                            TSNode mn = ts_node_child_by_field_name(right, TS_FIELD("name"));
+                            if (!ts_node_is_null(mn)) {
+                                char *mname = cbm_node_text(ctx->arena, mn, ctx->source);
+                                if (mname) {
+                                    const char *prefixes[] = {"create","make","get","build",
+                                        "find","fetch","load","retrieve", NULL};
+                                    for (int pi = 0; prefixes[pi]; pi++) {
+                                        size_t pl = strlen(prefixes[pi]);
+                                        if (strncmp(mname, prefixes[pi], pl) == 0 &&
+                                            mname[pl] >= 'A' && mname[pl] <= 'Z') {
+                                            strncpy(buf, mname + pl, sizeof(buf) - 1);
+                                            buf[sizeof(buf)-1] = '\0';
+                                            lst_insert(tab, vn, buf);
+                                            break;
+                                        }
+                                    }
+                                }
+                            }
+                        }
                     }
                 }
             }
