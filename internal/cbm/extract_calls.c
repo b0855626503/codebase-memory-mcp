@@ -867,6 +867,35 @@ static CBMCall lst_process_node(CBMExtractCtx *ctx, TSNode node,
         if (!ts_node_is_null(left) && !ts_node_is_null(right)) {
             const char *rk = ts_node_type(right);
             char *vn = cbm_node_text(ctx->arena, left, ctx->source);
+
+            /* Scan source text before assignment for '@var Type $var' docblock pattern */
+            uint32_t nb = ts_node_start_byte(node);
+            if (nb > 10 && ctx->source) {
+                uint32_t scan_start = nb > 512 ? nb - 512 : 0;
+                const char *pre = ctx->source + scan_start;
+                uint32_t pre_len = nb - scan_start;
+                const char *at_var = NULL;
+                for (const char *p = pre; p < pre + pre_len - 4; p++) {
+                    if (strncmp(p, "@var ", 5) == 0) {
+                        at_var = p + 5; break;
+                    }
+                }
+                if (at_var) {
+                    /* Extract type name between @var and $ or newline */
+                    char type_buf[CBM_LST_MAX_NAME];
+                    int ti = 0;
+                    while (*at_var && *at_var != ' ' && *at_var != '$' &&
+                           *at_var != '\n' && *at_var != '\r' && ti < (int)sizeof(type_buf) - 1) {
+                        type_buf[ti++] = *at_var++;
+                    }
+                    type_buf[ti] = '\0';
+                    /* Strip leading \ for FQCN */
+                    const char *tn = type_buf;
+                    if (tn[0] == '\\') tn++;
+                    if (tn[0]) lst_insert(tab, vn, tn);
+                }
+            }
+
             /* Direct constructor: $model = new User() */
             if (strcmp(rk, "object_creation_expression") == 0 ||
                 strcmp(rk, "new_expression") == 0) {
