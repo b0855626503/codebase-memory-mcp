@@ -383,6 +383,69 @@ int cbm_pipeline_pass_model_ownership(cbm_pipeline_ctx_t *ctx,
         }
     }
 
+    /* Step 6: Field-based USES_MODEL — R5 approach.
+     * Scan all Field nodes with return_type. Resolve type to Class QN.
+     * Field on Controller with return_type in Models/ → USES_MODEL.
+     * Field on Controller with return_type in Repositories/ → USES_REPOSITORY. */
+    const cbm_gbuf_node_t **fields = NULL;
+    int field_count = 0;
+    if (cbm_gbuf_find_by_label(ctx->gbuf, "Field", &fields, &field_count) == 0) {
+        for (int fi = 0; fi < field_count; fi++) {
+            const cbm_gbuf_node_t *f = fields[fi];
+            if (!f->properties_json) continue;
+            const char *rt = strstr(f->properties_json, "\"return_type\":\"");
+            if (!rt) continue;
+            rt += 15; /* skip "return_type":" */
+            const char *rte = strchr(rt, '"');
+            if (!rte || rte <= rt) continue;
+            size_t rtl = (size_t)(rte - rt);
+            if (rtl == 0 || rtl >= CBM_SZ_256) continue;
+            char rt_buf[CBM_SZ_256];
+            memcpy(rt_buf, rt, rtl); rt_buf[rtl] = '\0';
+            /* Normalize and get bare class name */
+            for (char *p = rt_buf; *p; p++) if (*p == '\\') *p = '.';
+            const char *bare = strrchr(rt_buf, '.');
+            bare = bare ? bare + 1 : rt_buf;
+            /* Look up class in gbuf */
+            const cbm_gbuf_node_t **cands = NULL;
+            int nc = 0;
+            cbm_gbuf_find_by_name(ctx->gbuf, bare, &cands, &nc);
+            for (int ci = 0; ci < nc; ci++) {
+                if (!cands[ci]->label || strcmp(cands[ci]->label, "Class") != 0) continue;
+                if (!cands[ci]->file_path) continue;
+                bool is_model = (strstr(cands[ci]->file_path, "/Models/") != NULL ||
+                                strstr(cands[ci]->file_path, "\\Models\\") != NULL);
+                bool is_repo = (strstr(cands[ci]->file_path, "/Repositories/") != NULL ||
+                               strstr(cands[ci]->file_path, "\\Repositories\\") != NULL);
+                if (!is_model && !is_repo) continue;
+                /* Get parent class from Field's parent_class property */
+                const char *pc = strstr(f->properties_json, "\"parent_class\":\"");
+                if (!pc) continue;
+                pc += 16; /* skip "parent_class":" */
+                const char *pce = strchr(pc, '"');
+                if (!pce || pce <= pc) continue;
+                /* Look up parent class in gbuf by QN */
+                const cbm_gbuf_node_t *parent = NULL;
+                for (int pi = 0; pi < class_count; pi++) {
+                    if (classes[pi]->qualified_name &&
+                        strncmp(classes[pi]->qualified_name, pc, (size_t)(pce - pc)) == 0 &&
+                        classes[pi]->qualified_name[(size_t)(pce - pc)] == '\0') {
+                        parent = classes[pi]; break;
+                    }
+                }
+                if (!parent || !parent->file_path) continue;
+                if (strstr(parent->file_path, "test") != NULL) continue;
+                const char *edge_type = is_model ? "USES_MODEL" : "USES_REPOSITORY";
+                char mp[CBM_SZ_512];
+                snprintf(mp, sizeof(mp), "{\"model\":\"%s\",\"edge_type\":\"%s\",\"via\":\"field_type\"}",
+                         cands[ci]->name ? cands[ci]->name : "", edge_type);
+                cbm_gbuf_insert_edge(ctx->gbuf, parent->id, cands[ci]->id, edge_type, mp);
+                if (is_model) us_es_model_count++; else us_es_repo_count++;
+                break;
+            }
+        }
+    }
+
     char count_buf[32];
     char repo_buf[32];
     snprintf(count_buf, sizeof(count_buf), "%d", us_es_model_count);
