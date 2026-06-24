@@ -1305,6 +1305,34 @@ static void emit_normal_calls_edge(cbm_gbuf_t *gbuf, const cbm_gbuf_node_t *sour
         return;
     }
 
+    /* field_type_heuristic_inherited (1,360 edges, ~20% precision):
+     * generic method names cross-file are the main noise source.
+     * callee_name may be "$this->memberRepository.find" — extract bare name. */
+    if (res->strategy && strcmp(res->strategy, "field_type_heuristic_inherited") == 0 &&
+        source->file_path && target->file_path &&
+        strcmp(source->file_path, target->file_path) != 0) {
+        const char *cn = call->callee_name;
+        if (cn) {
+            const char *dot = strrchr(cn, '.');
+            const char *arrow = strrchr(cn, '>');
+            if (dot && dot > cn) cn = dot + 1;
+            if (arrow && arrow > cn) cn = arrow + 1;
+            if (strcmp(cn, "find") == 0 || strcmp(cn, "create") == 0 ||
+                strcmp(cn, "delete") == 0 || strcmp(cn, "get") == 0 ||
+                strcmp(cn, "update") == 0 || strcmp(cn, "first") == 0 ||
+                strcmp(cn, "all") == 0 || strcmp(cn, "save") == 0) {
+                return;
+            }
+        }
+    }
+
+    /* php_function_global_fallback (409 edges, ~15% precision):
+     * nearly all are wrong — gate entirely. "ถูกต้อง ถึงไม่ครบ
+     * ก็ยังดีกว่าไม่มีเลย" — correct edges from other strategies. */
+    if (res->strategy && strcmp(res->strategy, "php_function_global_fallback") == 0) {
+        return;
+    }
+
     char esc_c[CBM_SZ_256];
     cbm_json_escape(esc_c, sizeof(esc_c), call->callee_name);
     char props[CBM_SZ_2K];

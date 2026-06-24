@@ -339,6 +339,33 @@ static void emit_classified_edge(cbm_pipeline_ctx_t *ctx, const CBMCall *call,
         return;
     }
 
+    /* field_type_heuristic_inherited (1,360 edges, ~20% precision):
+     * generic method names cross-file are the main noise source.
+     * callee_name may be "$this->memberRepository.find" — extract bare name. */
+    if (res->strategy && strcmp(res->strategy, "field_type_heuristic_inherited") == 0 &&
+        source->file_path && target->file_path &&
+        strcmp(source->file_path, target->file_path) != 0) {
+        const char *cn = call->callee_name;
+        if (cn) {
+            const char *dot = strrchr(cn, '.');
+            const char *arrow = strrchr(cn, '>');
+            if (dot && dot > cn) cn = dot + 1;
+            if (arrow && arrow > cn) cn = arrow + 1;
+            if (strcmp(cn, "find") == 0 || strcmp(cn, "create") == 0 ||
+                strcmp(cn, "delete") == 0 || strcmp(cn, "get") == 0 ||
+                strcmp(cn, "update") == 0 || strcmp(cn, "first") == 0 ||
+                strcmp(cn, "all") == 0 || strcmp(cn, "save") == 0) {
+                return;
+            }
+        }
+    }
+
+    /* php_function_global_fallback (409 edges, ~15% precision):
+     * nearly all are wrong — gate entirely. */
+    if (res->strategy && strcmp(res->strategy, "php_function_global_fallback") == 0) {
+        return;
+    }
+
     snprintf(props, sizeof(props),
              "{\"callee\":\"%s\",\"confidence\":%.2f,\"strategy\":\"%s\",\"candidates\":%d}",
              esc_c2, res->confidence, res->strategy ? res->strategy : "unknown",
