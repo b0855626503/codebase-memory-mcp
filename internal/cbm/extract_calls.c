@@ -800,15 +800,143 @@ static char *gotemplate_callee(CBMArena *a, TSNode node, const char *source) {
     return NULL;
 }
 
+/* ── Local Symbol Table: intra-procedural type inference ────────────
+ * Tracks variable→type assignments within a function scope.
+ * $model = new User() → insert("$model", "User")
+ * $model->save()     → lookup("$model") → "User" → resolve as User.save */
+#define CBM_LST_MAX_SYMBOLS 256
+#define CBM_LST_MAX_NAME 128
+
+typedef struct {
+    char var_name[CBM_LST_MAX_NAME];
+    char type_name[CBM_LST_MAX_NAME];
+} CBMLocalVar;
+
+typedef struct {
+    CBMLocalVar vars[CBM_LST_MAX_SYMBOLS];
+    int count;
+} CBMLocalSymTab;
+
+static void lst_clear(CBMLocalSymTab *t) { t->count = 0; }
+
+static void lst_insert(CBMLocalSymTab *t, const char *var, const char *type) {
+    if (!var || !type || t->count >= CBM_LST_MAX_SYMBOLS) return;
+    for (int i = 0; i < t->count; i++) {
+        if (strcmp(t->vars[i].var_name, var) == 0) {
+            strncpy(t->vars[i].type_name, type, CBM_LST_MAX_NAME - 1);
+            return;
+        }
+    }
+    strncpy(t->vars[t->count].var_name, var, CBM_LST_MAX_NAME - 1);
+    strncpy(t->vars[t->count].type_name, type, CBM_LST_MAX_NAME - 1);
+    t->count++;
+}
+
+static const char *lst_lookup(CBMLocalSymTab *t, const char *var) {
+    if (!var) return NULL;
+    for (int i = 0; i < t->count; i++) {
+        if (strcmp(t->vars[i].var_name, var) == 0) return t->vars[i].type_name;
+    }
+    return NULL;
+}
+
+/* Process AST node with Local Symbol Table: track assignments,
+ * resolve member calls via type inference. Returns a CBMCall
+ * if successful, NULL to fall through to normal pipeline. */
+static CBMCall lst_process_node(CBMExtractCtx *ctx, TSNode node,
+                                 CBMLocalSymTab *tab, const char *nk) {
+    /* Case A: $model = new User() → track assignment */
+    if (strcmp(nk, "assignment_expression") == 0) {
+        TSNode left = ts_node_child_by_field_name(node, TS_FIELD("left"));
+        TSNode right = ts_node_child_by_field_name(node, TS_FIELD("right"));
+        if (!ts_node_is_null(left) && !ts_node_is_null(right)) {
+            const char *rk = ts_node_type(right);
+            if (strcmp(rk, "object_creation_expression") == 0 ||
+                strcmp(rk, "new_expression") == 0) {
+                char *vn = cbm_node_text(ctx->arena, left, ctx->source);
+                char *cn = extract_constructor_callee(ctx->arena, right, ctx->source, rk);
+                if (vn && cn) lst_insert(tab, vn, cn);
+            }
+        }
+        return (CBMCall){0};
+    }
+
+    /* Case B: $model->save() → lookup type, resolve as Type.method */
+    if (strcmp(nk, "member_call_expression") == 0) {
+        TSNode obj = ts_node_child_by_field_name(node, TS_FIELD("object"));
+        TSNode name_n = ts_node_child_by_field_name(node, TS_FIELD("name"));
+        if (!ts_node_is_null(obj) && !ts_node_is_null(name_n)) {
+            char *vn = cbm_node_text(ctx->arena, obj, ctx->source);
+            char *mn = cbm_node_text(ctx->arena, name_n, ctx->source);
+            if (vn && mn) {
+                /* Check for $this->prop->method() pattern */
+                const char *rk2 = ts_node_type(obj);
+                if (strcmp(rk2, "member_expression") == 0) {
+                    TSNode sub_o = ts_node_child_by_field_name(obj, TS_FIELD("object"));
+                    TSNode sub_p = ts_node_child_by_field_name(obj, TS_FIELD("name"));
+                    if (!ts_node_is_null(sub_o) && !ts_node_is_null(sub_p)) {
+                        char *so = cbm_node_text(ctx->arena, sub_o, ctx->source);
+                        char *sp = cbm_node_text(ctx->arena, sub_p, ctx->source);
+                        if (so && strcmp(so, "$this") == 0 && sp) {
+                            /* $this->event->method(): try table, then heuristic */
+                            const char *tp = lst_lookup(tab, sp);
+                            if (!tp) {
+                                tp = cbm_arena_strdup(ctx->arena, sp);
+                                if (tp && tp[0]) {
+                                    char *up = cbm_arena_strdup(ctx->arena, tp);
+                                    if (up && up[0] >= 'a' && up[0] <= 'z')
+                                        up[0] = (char)(up[0] - 'a' + 'A');
+                                    tp = up;
+                                }
+                            }
+                            if (tp && mn) {
+                                CBMCall call = {0};
+                                call.callee_name = cbm_arena_sprintf(ctx->arena, "%s.%s", tp, mn);
+                                call.receiver_expr = cbm_arena_strdup(ctx->arena, tp);
+                                call.enclosing_func_qn = cbm_enclosing_func_qn_cached(ctx, node);
+                                call.start_line = (int)ts_node_start_point(node).row + 1;
+                                return call;
+                            }
+                        }
+                    }
+                }
+                /* Simple $var->method(): lookup type in table */
+                const char *tp2 = lst_lookup(tab, vn);
+                if (tp2 && mn) {
+                    CBMCall call = {0};
+                    call.callee_name = cbm_arena_sprintf(ctx->arena, "%s.%s", tp2, mn);
+                    call.receiver_expr = cbm_arena_strdup(ctx->arena, tp2);
+                    call.enclosing_func_qn = cbm_enclosing_func_qn_cached(ctx, node);
+                    call.start_line = (int)ts_node_start_point(node).row + 1;
+                    return call;
+                }
+            }
+        }
+        return (CBMCall){0};
+    }
+    return (CBMCall){0};
+}
+
 // Walk AST for call nodes (iterative)
 static void walk_calls(CBMExtractCtx *ctx, TSNode root, const CBMLangSpec *spec) {
     TSNodeStack stack;
     ts_nstack_init(&stack, ctx->arena, CBM_SZ_512);
     ts_nstack_push(&stack, ctx->arena, root);
 
+    CBMLocalSymTab symtab;
+    lst_clear(&symtab);
+
     while (stack.count > 0) {
         TSNode node = ts_nstack_pop(&stack);
         const char *kind = ts_node_type(node);
+
+        /* Local Symbol Table: resolve $model->save() via type inference */
+        if (kind) {
+            CBMCall lst_call = lst_process_node(ctx, node, &symtab, kind);
+            if (lst_call.callee_name && lst_call.callee_name[0]) {
+                cbm_calls_push(&ctx->result->calls, ctx->arena, lst_call);
+            }
+        }
 
         /* Bypass call pipeline: constructor calls → __ctor__ for USES_MODEL */
         const char *nk2 = ts_node_type(node);
