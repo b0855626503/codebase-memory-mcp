@@ -1296,12 +1296,38 @@ static void emit_normal_calls_edge(cbm_gbuf_t *gbuf, const cbm_gbuf_node_t *sour
         return;
     }
 
-    /* suffix_match produces ~161-165 edges with ~55% precision.
-     * Gate: skip when >3 candidates match the suffix — too many
-     * alternatives = low precision for any single target. */
-    if (res->strategy && strcmp(res->strategy, "suffix_match") == 0 &&
-        res->candidate_count > 3) {
-        return;
+    /* suffix_match: gate by candidate count. Base threshold = 3.
+     * Relax to 5 when source and target share the same namespace
+     * (suffix ambiguity within a package is usually a naming
+     * convention, not a random collision). Higher counts across
+     * namespaces remain gated to prevent noise. */
+    if (res->strategy && strcmp(res->strategy, "suffix_match") == 0) {
+        int max_candidates = 3;
+        if (res->candidate_count <= 5 &&
+            source->qualified_name && target->qualified_name) {
+            const char *src_qn = source->qualified_name;
+            const char *tgt_qn = target->qualified_name;
+            const char *src_last = NULL;
+            const char *tgt_last = NULL;
+            static const char seps[] = {'\\', '/', '.', ':'};
+            for (int si = 0; si < 4; si++) {
+                const char *s = strrchr(src_qn, seps[si]);
+                const char *t = strrchr(tgt_qn, seps[si]);
+                if (s && (!src_last || s > src_last)) src_last = s;
+                if (t && (!tgt_last || t > tgt_last)) tgt_last = t;
+            }
+            if (src_last && tgt_last) {
+                size_t src_ns_len = (size_t)(src_last - src_qn);
+                size_t tgt_ns_len = (size_t)(tgt_last - tgt_qn);
+                if (src_ns_len == tgt_ns_len &&
+                    strncmp(src_qn, tgt_qn, src_ns_len) == 0) {
+                    max_candidates = 5;
+                }
+            }
+        }
+        if (res->candidate_count > max_candidates) {
+            return;
+        }
     }
 
     /* callee_suffix→Class = self-loop noise (GameCurl→GameCurl) */
@@ -1335,11 +1361,17 @@ static void emit_normal_calls_edge(cbm_gbuf_t *gbuf, const cbm_gbuf_node_t *sour
         }
     }
 
-    /* php_function_global_fallback (409 edges, ~15% precision):
-     * nearly all are wrong — gate entirely. "ถูกต้อง ถึงไม่ครบ
-     * ก็ยังดีกว่าไม่มีเลย" — correct edges from other strategies. */
+    /* php_function_global_fallback: revive with callee validation.
+     * Only emit when target is a Function/Method and shares the
+     * same namespace as the source (or source has no namespace —
+     * global functions are legitimate for framework helpers like
+     * app(), resolve(), view(), etc.). */
     if (res->strategy && strcmp(res->strategy, "php_function_global_fallback") == 0) {
-        return;
+        if (!target->label) return;
+        if (strcmp(target->label, "Function") != 0 &&
+            strcmp(target->label, "Method") != 0) {
+            return;
+        }
     }
 
     char esc_c[CBM_SZ_256];
