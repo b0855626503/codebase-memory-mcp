@@ -213,6 +213,116 @@ int cbm_pipeline_pass_model_ownership(cbm_pipeline_ctx_t *ctx,
 
     free(model_ids);
 
+    /* Step 3: Scan callee_suffix + php_static_resolved CALLS edges.
+     * Many controllers call Models via static methods like
+     * GameLogProxy::where(...) or SpecialEvent::query()->orderBy(...).
+     * The callee text contains the class name before "::".
+     * Extract it, match against Models/ dir classes, create USES_MODEL. */
+    const cbm_gbuf_edge_t **all_calls = NULL;
+    int all_count = 0;
+    if (cbm_gbuf_find_edges_by_type(ctx->gbuf, "CALLS", &all_calls, &all_count) == 0) {
+        for (int i = 0; i < all_count; i++) {
+            const char *props = all_calls[i]->properties_json;
+            if (!props) continue;
+            /* Check for callee_suffix or php_static_resolved strategies */
+            if (!strstr(props, "\"strategy\":\"callee_suffix\"") &&
+                !strstr(props, "\"strategy\":\"php_static_resolved\"")) continue;
+
+            /* Extract callee name from JSON */
+            const char *ck = strstr(props, "\"callee\":\"");
+            if (!ck) continue;
+            ck += 10; /* skip "callee":" */
+            const char *ce = strchr(ck, '"');
+            if (!ce || ce <= ck) continue;
+
+            /* Find "::" in callee text (static method call) */
+            const char *dc = ck;
+            while (dc < ce && *dc && !(*dc == ':' && *(dc + 1) == ':')) dc++;
+            if (dc >= ce || dc == ck) continue; /* no :: prefix or empty class name */
+
+            /* Extract class name before ::, normalize \ to . */
+            size_t clen = (size_t)(dc - ck);
+            if (clen >= CBM_SZ_256) continue;
+            char class_name[CBM_SZ_256];
+            memcpy(class_name, ck, clen);
+            class_name[clen] = '\0';
+            for (char *p = class_name; *p; p++) if (*p == '\\') *p = '.';
+
+            /* Match against gbuf: find class by name (last segment) */
+            const char *bare = strrchr(class_name, '.');
+            bare = bare ? bare + 1 : class_name;
+            const cbm_gbuf_node_t **cands = NULL;
+            int nc = 0;
+            cbm_gbuf_find_by_name(ctx->gbuf, bare, &cands, &nc);
+            for (int ci = 0; ci < nc; ci++) {
+                if (!cands[ci]->label || strcmp(cands[ci]->label, "Class") != 0) continue;
+                if (!is_eloquent_model_class(ctx->gbuf, cands[ci]->id)) continue;
+                /* Emit USES_MODEL from caller to the Model class */
+                const cbm_gbuf_node_t *src = cbm_gbuf_find_by_id(ctx->gbuf, all_calls[i]->source_id);
+                if (!src || src->file_path == NULL) continue;
+                if (src->file_path && strstr(src->file_path, "test") != NULL) continue;
+                char mp[CBM_SZ_512];
+                snprintf(mp, sizeof(mp), "{\"model\":\"%s\",\"edge_type\":\"USES_MODEL\",\"via\":\"static_call\"}",
+                         cands[ci]->name ? cands[ci]->name : "");
+                cbm_gbuf_insert_edge(ctx->gbuf, src->id, cands[ci]->id, "USES_MODEL", mp);
+                us_es_model_count++;
+                break; /* one class per call */
+            }
+        }
+    }
+
+    /* Step 4: php_static_resolved edges targeting Methods on Model classes.
+     * Walk DEFINES_METHOD from the method's parent Class; if parent is Eloquent
+     * model, create USES_MODEL from caller to the parent Class. */
+    if (cbm_gbuf_find_edges_by_type(ctx->gbuf, "CALLS", &all_calls, &all_count) == 0) {
+        for (int i = 0; i < all_count; i++) {
+            const char *props = all_calls[i]->properties_json;
+            if (!props) continue;
+            if (!strstr(props, "\"strategy\":\"php_static_resolved\"")) continue;
+            const cbm_gbuf_node_t *tgt = cbm_gbuf_find_by_id(ctx->gbuf, all_calls[i]->target_id);
+            if (!tgt || !tgt->label || strcmp(tgt->label, "Method") != 0) continue;
+            /* Find parent Class via DEFINES_METHOD */
+            const cbm_gbuf_edge_t **dm = NULL;
+            int dmc = 0;
+            if (cbm_gbuf_find_edges_by_target_type(ctx->gbuf, tgt->id, "DEFINES_METHOD",
+                                                    &dm, &dmc) != 0 || dmc == 0) continue;
+            const cbm_gbuf_node_t *parent = cbm_gbuf_find_by_id(ctx->gbuf, dm[0]->source_id);
+            if (!parent || !is_eloquent_model_class(ctx->gbuf, parent->id)) continue;
+            const cbm_gbuf_node_t *src = cbm_gbuf_find_by_id(ctx->gbuf, all_calls[i]->source_id);
+            if (!src || src->file_path == NULL) continue;
+            if (strstr(src->file_path, "test") != NULL) continue;
+            char mp[CBM_SZ_512];
+            snprintf(mp, sizeof(mp), "{\"model\":\"%s\",\"edge_type\":\"USES_MODEL\",\"via\":\"static_resolved\"}",
+                     parent->name ? parent->name : "");
+            cbm_gbuf_insert_edge(ctx->gbuf, src->id, parent->id, "USES_MODEL", mp);
+            us_es_model_count++;
+        }
+    }
+
+    /* Step 5: Repository chain propagation.
+     * If X →USES_MODEL→ Repository AND Repository →OWNS_MODEL→ Model,
+     * then create X →USES_MODEL→ Model. */
+    const cbm_gbuf_edge_t **us_es = NULL;
+    int us_count = 0;
+    if (cbm_gbuf_find_edges_by_type(ctx->gbuf, "USES_MODEL", &us_es, &us_count) == 0) {
+        for (int i = 0; i < us_count; i++) {
+            /* Check if target of USES_MODEL has OWNS_MODEL to a Model */
+            const cbm_gbuf_edge_t **owns = NULL;
+            int oc = 0;
+            if (cbm_gbuf_find_edges_by_source_type(ctx->gbuf, us_es[i]->target_id, "OWNS_MODEL",
+                                                    &owns, &oc) != 0 || oc == 0) continue;
+            for (int oi = 0; oi < oc; oi++) {
+                const cbm_gbuf_node_t *model = cbm_gbuf_find_by_id(ctx->gbuf, owns[oi]->target_id);
+                if (!model) continue;
+                char mp[CBM_SZ_512];
+                snprintf(mp, sizeof(mp), "{\"model\":\"%s\",\"edge_type\":\"USES_MODEL\",\"via\":\"repo_chain\"}",
+                         model->name ? model->name : "");
+                cbm_gbuf_insert_edge(ctx->gbuf, us_es[i]->source_id, model->id, "USES_MODEL", mp);
+                us_es_model_count++;
+            }
+        }
+    }
+
     char count_buf[32];
     snprintf(count_buf, sizeof(count_buf), "%d", us_es_model_count);
     cbm_log_info("model_ownership", "pass", "us-es_model",
