@@ -181,19 +181,30 @@ static char *extract_constructor_callee(CBMArena *a, TSNode node, const char *so
     }
 
     // Preferred: explicit fields used by the various grammars.
-    static const char *type_fields[] = {"class", "constructor", "type", "name", NULL};
-    for (const char **f = type_fields; *f; f++) {
-        TSNode tn = ts_node_child_by_field_name(node, *f, (uint32_t)strlen(*f));
-        if (!ts_node_is_null(tn)) {
-            const char *tk = ts_node_type(tn);
-            // For a generic_type wrapper, descend to the bare name child.
-            if (strcmp(tk, "generic_type") == 0 && ts_node_named_child_count(tn) > 0) {
-                tn = ts_node_named_child(tn, 0);
-            }
-            char *t = strip_generic_args(cbm_node_text(a, tn, source));
-            if (t && t[0]) {
-                return t;
-            }
+    // Use TS_FIELD() macro — NOT raw strlen — for correct tree-sitter field lookup
+    TSNode tn = ts_node_child_by_field_name(node, TS_FIELD("class"));
+    if (ts_node_is_null(tn)) tn = ts_node_child_by_field_name(node, TS_FIELD("type"));
+    if (ts_node_is_null(tn)) tn = ts_node_child_by_field_name(node, TS_FIELD("constructor"));
+    if (ts_node_is_null(tn)) tn = ts_node_child_by_field_name(node, TS_FIELD("name"));
+
+    if (!ts_node_is_null(tn)) {
+        const char *tk = ts_node_type(tn);
+        if (strcmp(tk, "generic_type") == 0 && ts_node_named_child_count(tn) > 0) {
+            tn = ts_node_named_child(tn, 0);
+        }
+        char *t = strip_generic_args(cbm_node_text(a, tn, source));
+        if (t && t[0]) return t;
+    }
+
+    // Fallback: scan children for name/type_identifier nodes
+    uint32_t nchild = ts_node_child_count(node);
+    for (uint32_t i = 0; i < nchild && i < 8; i++) {
+        TSNode child = ts_node_child(node, i);
+        const char *ck = ts_node_type(child);
+        if (strcmp(ck, "name") == 0 || strcmp(ck, "type_identifier") == 0 ||
+            strcmp(ck, "named_type") == 0) {
+            char *t = strip_generic_args(cbm_node_text(a, child, source));
+            if (t && t[0]) return t;
         }
     }
 
