@@ -1,6 +1,7 @@
 #include "cbm.h"
 #include "arena.h" // CBMArena, cbm_arena_alloc/strdup/sprintf
 #include "helpers.h"
+#include "foundation/log.h"
 #include "lang_specs.h"
 #include "foundation/constants.h"
 #include "extract_node_stack.h"
@@ -10,6 +11,7 @@
 #include <stdint.h>          // uint32_t
 #include <string.h>
 #include <ctype.h>
+#include <stdio.h>
 
 // Buffer sizes for local arrays (base classes, params, return types).
 #define MAX_COMMENT_LEN 500
@@ -3350,6 +3352,7 @@ static void extract_class_def(CBMExtractCtx *ctx, TSNode node, const CBMLangSpec
         TSNode body = find_class_body(node, ctx->language);
         if (!ts_node_is_null(body)) {
             uint32_t bc = ts_node_child_count(body);
+            int ctor_found = 0;
             for (uint32_t ci = 0; ci < bc; ci++) {
                 TSNode child = ts_node_child(body, ci);
                 if (ts_node_is_null(child) || !ts_node_is_named(child)) continue;
@@ -3358,6 +3361,7 @@ static void extract_class_def(CBMExtractCtx *ctx, TSNode node, const CBMLangSpec
                 char *mn = !ts_node_is_null(mname) ?
                     cbm_node_text(a, mname, ctx->source) : NULL;
                 int is_ctor = mn && strcmp(mn, "__construct") == 0;
+                if (is_ctor) ctor_found = 1;
 
                 // Collect parameter types: param_name → type_text
                 TSNode params = ts_node_child_by_field_name(child, TS_FIELD("parameters"));
@@ -3403,6 +3407,7 @@ static void extract_class_def(CBMExtractCtx *ctx, TSNode node, const CBMLangSpec
                 if (!is_ctor) continue;
                 TSNode cbody = ts_node_child_by_field_name(child, TS_FIELD("body"));
                 if (ts_node_is_null(cbody)) continue;
+                int expr_stmts = 0, assign_exprs = 0, member_assigns = 0, field_defs = 0;
                 // Iterative DFS over body
                 enum { CTOR_STACK_MAX = 128 };
                 TSNode stack[CTOR_STACK_MAX];
@@ -3411,16 +3416,19 @@ static void extract_class_def(CBMExtractCtx *ctx, TSNode node, const CBMLangSpec
                 while (sp > 0) {
                     TSNode cur = stack[--sp];
                     if (strcmp(ts_node_type(cur), "expression_statement") == 0) {
+                        expr_stmts++;
                         uint32_t esc = ts_node_child_count(cur);
                         for (uint32_t ei = 0; ei < esc; ei++) {
                             TSNode ec = ts_node_child(cur, ei);
                             if (ts_node_is_null(ec) || !ts_node_is_named(ec)) continue;
                             if (strcmp(ts_node_type(ec), "assignment_expression") != 0) continue;
+                            assign_exprs++;
                             TSNode left = ts_node_child_by_field_name(ec, TS_FIELD("left"));
                             TSNode right = ts_node_child_by_field_name(ec, TS_FIELD("right"));
                             if (ts_node_is_null(left) || ts_node_is_null(right)) continue;
                             // left must be member_access_expression on $this
                             if (strcmp(ts_node_type(left), "member_access_expression") != 0) continue;
+                            member_assigns++;
                             TSNode obj = ts_node_child_by_field_name(left, TS_FIELD("object"));
                             if (ts_node_is_null(obj)) continue;
                             char *ot = cbm_node_text(a, obj, ctx->source);
@@ -3465,6 +3473,7 @@ static void extract_class_def(CBMExtractCtx *ctx, TSNode node, const CBMLangSpec
                                     field_def.return_type = type_text2;
                                     field_def.is_exported = true;
                                     cbm_defs_push(&ctx->result->defs, a, field_def);
+                                    field_defs++;
                                     break;
                                 }
                             }
@@ -3479,6 +3488,28 @@ static void extract_class_def(CBMExtractCtx *ctx, TSNode node, const CBMLangSpec
                         }
                     }
                 }
+                if (class_qn && strstr(class_qn, "BankPaymentRepository")) {
+                    char ebuf[4][32];
+                    snprintf(ebuf[0], 32, "%d", expr_stmts);
+                    snprintf(ebuf[1], 32, "%d", assign_exprs);
+                    snprintf(ebuf[2], 32, "%d", member_assigns);
+                    snprintf(ebuf[3], 32, "%d", field_defs);
+                    cbm_log_info("p0.ctor_assign",
+                        "class", class_qn,
+                        "expr_stmts", ebuf[0],
+                        "assign_exprs", ebuf[1],
+                        "member_assigns", ebuf[2],
+                        "field_defs", ebuf[3]);
+                }
+            }
+            /* P0 debug: log PHP class constructor field extraction */
+            if (class_qn && strstr(class_qn, "BankPaymentRepository")) {
+                char bc_buf[32];
+                snprintf(bc_buf, sizeof(bc_buf), "%d", (int)bc);
+                cbm_log_info("p0.ctor_extract",
+                    "class", class_qn,
+                    "ctor_found", ctor_found ? "YES" : "NO",
+                    "body_children", bc_buf);
             }
         }
     }

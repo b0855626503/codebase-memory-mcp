@@ -64,6 +64,7 @@ enum {
 #include "foundation/str_util.h"
 
 #define XXH_INLINE_ALL
+#include "pipeline/pass_model_ownership.h"
 #include "xxhash/xxhash.h"
 
 #include <sqlite3.h>
@@ -2201,6 +2202,27 @@ int cbm_extract_like_hints(const char *pattern, char **out, int max_out) {
                 i++;
             }
             break;
+        case '[':
+            /* Character class: flush current segment, then skip to matching ']'.
+             * Contents of [...] are NOT literal (e.g. [a-z] matches letters,
+             * not the string "a-z"), so extracting LIKE hints from them would
+             * produce false-negative pre-filters (#481). */
+            if (blen >= ST_GLOB_MIN_LEN && count < max_out) {
+                buf[blen] = '\0';
+                out[count++] = strdup(buf);
+            }
+            blen = 0;
+            i++;
+            /* Skip to matching ']', handling nesting and escapes */
+            while (pattern[i] && pattern[i] != ']') {
+                if (pattern[i] == '\\' && pattern[i + 1]) {
+                    i += ST_GLOB_SKIP;  /* skip escaped char inside class */
+                } else {
+                    i++;
+                }
+            }
+            if (pattern[i] == ']') i++;  /* skip the closing ']' */
+            break;
         case '.':
         case '*':
         case '+':
@@ -2209,7 +2231,6 @@ int cbm_extract_like_hints(const char *pattern, char **out, int max_out) {
         case '$':
         case '(':
         case ')':
-        case '[':
         case ']':
         case '{':
         case '}':
@@ -3478,25 +3499,30 @@ static int arch_hotspots(cbm_store_t *s, const char *project, cbm_architecture_i
     const char *sql = "SELECT n.name, n.qualified_name, COUNT(*) as fan_in "
                       "FROM nodes n "
                       "JOIN edges e ON e.target_id = n.id "
-                      "  AND e.type IN ('CALLS','ROUTES_TO','HANDLES') "
+                      "  AND e.type IN ('CALLS','ROUTES_TO','HANDLES','USES_MODEL') "
                       /* Exclude edges from test callers. */
                       "  AND e.source_id NOT IN ("
                       "    SELECT id FROM nodes "
                       "    WHERE project=?1 AND label IN ('Function','Method') "
                       "    AND (json_extract(properties,'$.is_test')=1 "
                       "         OR file_path LIKE '%test%')) "
-                      /* Exclude unique_name resolution edges where source and
-                       * target are in different files. These are likely false
-                       * positives from global name matching on common method
-                       * names like now(), create(), config(). */
-                      "  AND NOT (json_extract(e.properties,'$.strategy')='unique_name'"
-                      "    AND (SELECT file_path FROM nodes WHERE id=e.source_id)"
-                      "     != n.file_path) "
                       "WHERE n.project=?1 AND n.label IN ('Function', 'Method') "
                       "AND (json_extract(n.properties, '$.is_test') IS NULL OR "
                       "json_extract(n.properties, '$.is_test') != 1) "
                       "AND n.file_path NOT LIKE '%test%' "
-                      "AND NOT (n.label = 'Function' AND n.file_path LIKE '%helper%') "
+                      /* Exclude known framework helpers (same as is_framework_helper()).
+                       * These are global PHP/Laravel functions that get resolved to
+                       * same-named business methods via suffix matching. */
+                      "AND n.name NOT IN ('now','request','response','config','cache','auth',"
+                      "'session','redirect','abort','validator','view','cookie','event',"
+                      "'dispatch','logger','info','env','route','back','url','action','asset',"
+                      "'mix','vite','old','report','date','today','head','last','value','with',"
+                      "'collect','tap','trans','__','rescue','retry','bcrypt','blank','filled',"
+                      "'optional','throw_if','throw_unless','transform','policy','gate','e',"
+                      "'csrf_token','csrf_field','method_field','base_path','public_path',"
+                      "'storage_path','resource_path','app_path','config_path','database_path',"
+                      "'lang_path','dispatch_sync','dispatch_now','windows_os','class_basename',"
+                      "'data_get','data_set','trans_choice') "
                       "GROUP BY n.id ORDER BY fan_in DESC LIMIT 10";
     sqlite3_stmt *stmt = NULL;
     if (sqlite3_prepare_v2(s->db, sql, CBM_NOT_FOUND, &stmt, NULL) != SQLITE_OK) {
@@ -6079,3 +6105,171 @@ void cbm_store_incident_free(cbm_incident_t *incidents, int count) {
     }
     free(incidents);
 }
+
+
+/* ── Sprint R: Model Ownership Enrichment ────────────────────────── */
+
+int cbm_store_enrich_model_ownership(cbm_store_t *s, const char *project,
+                                      const char *repo_path) {
+    if (!s || !s->db || !project || !repo_path) return 0;
+    cbm_log_info("store.model_ownership", "status", "starting");
+
+    sqlite3_stmt *stmt = NULL;
+    const char *sql = "SELECT id, qualified_name, file_path FROM nodes "
+                      "WHERE project=?1 AND label='Class' "
+                      "AND qualified_name LIKE '%Repository%' "
+                      "AND file_path LIKE '%.php'";
+    if (sqlite3_prepare_v2(s->db, sql, CBM_NOT_FOUND, &stmt, NULL) != SQLITE_OK) {
+        cbm_log_info("store.model_ownership", "error", "query_failed");
+        return 0;
+    }
+    bind_text(stmt, 1, project);
+
+    int created = 0, scanned = 0, model_found = 0;
+    while (sqlite3_step(stmt) == SQLITE_ROW) {
+        scanned++;
+        int64_t repo_id = sqlite3_column_int64(stmt, 0);
+        const char *qn = (const char *)sqlite3_column_text(stmt, 1);
+        const char *fp = (const char *)sqlite3_column_text(stmt, 2);
+        if (!qn || !fp) continue;
+
+        char abs_path[CBM_SZ_4K];
+        snprintf(abs_path, sizeof(abs_path), "%s/%s", repo_path, fp);
+        FILE *f = fopen(abs_path, "r");
+        if (!f) continue;
+        fseek(f, 0, SEEK_END);
+        long sz = ftell(f);
+        fseek(f, 0, SEEK_SET);
+        if (sz <= 0 || sz > CBM_SZ_64K) { fclose(f); continue; }
+        char *source = malloc((size_t)sz + 1);
+        if (!source) { fclose(f); continue; }
+        size_t nread = fread(source, 1, (size_t)sz, f);
+        fclose(f);
+        source[nread] = '\0';
+
+        char *model_dot = cbm_extract_model_class(source);
+        free(source);
+        if (!model_dot) continue;
+        model_found++;
+
+        const char *bare = strrchr(model_dot, '.');
+        bare = bare ? bare + 1 : model_dot;
+
+        sqlite3_stmt *mstmt = NULL;
+        if (sqlite3_prepare_v2(s->db,
+            "SELECT id FROM nodes WHERE project=?1 AND label='Class' AND name=?2 LIMIT 1",
+            CBM_NOT_FOUND, &mstmt, NULL) == SQLITE_OK) {
+            bind_text(mstmt, 1, project);
+            bind_text(mstmt, 2, bare);
+            if (sqlite3_step(mstmt) == SQLITE_ROW) {
+                int64_t model_id = sqlite3_column_int64(mstmt, 0);
+                if (model_id != repo_id) {
+                    char props[512];
+                    snprintf(props, sizeof(props),
+                             "{\"model_fqcn\":\"%s\",\"ownership\":\"model_method\"}",
+                             model_dot);
+                    cbm_edge_t edge = {
+                        .source_id = repo_id,
+                        .target_id = model_id,
+                        .type = "OWNS_MODEL",
+                        .properties_json = props,
+                        .project = (char *)project,
+
+
+    };
+                    int64_t eid = cbm_store_insert_edge(s, &edge);
+                    if (eid >= 0) created++;
+                }
+            }
+            sqlite3_finalize(mstmt);
+        }
+        free(model_dot);
+    }
+    sqlite3_finalize(stmt);
+
+    {
+        char sbuf[32], mbuf[32], ebuf[32];
+        snprintf(sbuf, sizeof(sbuf), "%d", scanned);
+        snprintf(mbuf, sizeof(mbuf), "%d", model_found);
+        snprintf(ebuf, sizeof(ebuf), "%d", created);
+        cbm_log_info("store.model_ownership", "scanned", sbuf,
+                     "model_found", mbuf, "edges", ebuf);
+    }
+    return created;
+
+}
+
+/* ── Sprint B: CRUD Inheritance Method Extraction ───────────────── */
+
+int cbm_store_enrich_crud_inheritance(cbm_store_t *s, const char *project) {
+    if (!s || !s->db || !project) return 0;
+    cbm_log_info("store.crud_inheritance", "status", "starting");
+
+    /* Find the Core\Eloquent\Repository Class node */
+    int64_t base_repo_id = -1;
+    char *class_qn = NULL;
+    sqlite3_stmt *bstmt = NULL;
+    if (sqlite3_prepare_v2(s->db,
+        "SELECT id, qualified_name FROM nodes WHERE project=?1 AND label='Class' "
+        "AND qualified_name LIKE '%Core.src.Eloquent.Repository.Repository' LIMIT 1",
+        -1, &bstmt, NULL) == SQLITE_OK) {
+        bind_text(bstmt, 1, project);
+        if (sqlite3_step(bstmt) == SQLITE_ROW) {
+            base_repo_id = sqlite3_column_int64(bstmt, 0);
+            class_qn = strdup((const char *)sqlite3_column_text(bstmt, 1));
+        }
+        sqlite3_finalize(bstmt);
+    }
+    if (base_repo_id < 0 || !class_qn) {
+        cbm_log_info("store.crud_inheritance", "error", "base_repo_not_found");
+        return 0;
+    }
+
+    static const char *methods[] = {"create", "update", "delete", NULL};
+    int created = 0;
+    for (int mi = 0; methods[mi]; mi++) {
+        char method_qn[512];
+        snprintf(method_qn, sizeof(method_qn), "%s.%s", class_qn, methods[mi]);
+        /* INSERT OR IGNORE the Method node */
+        sqlite3_stmt *istmt = NULL;
+        if (sqlite3_prepare_v2(s->db,
+            "INSERT OR IGNORE INTO nodes (project, label, name, qualified_name, "
+            "  file_path, start_line, end_line, properties) "
+            "VALUES (?1, 'Method', ?2, ?3, "
+            "  'vendor/prettus/l5-repository/src/Prettus/Repository/Eloquent/BaseRepository.php', "
+            "  631, 750, ?4)",
+            -1, &istmt, NULL) == SQLITE_OK) {
+            bind_text(istmt, 1, project);
+            bind_text(istmt, 2, methods[mi]);
+            bind_text(istmt, 3, method_qn);
+            char props[512];
+            snprintf(props, sizeof(props),
+                "{\"inherited_from\":\"Prettus\\Repository\\Eloquent\\BaseRepository\","
+                "\"signature\":\"(array $attributes)\",\"is_exported\":true}");
+            bind_text(istmt, 4, props);
+            if (sqlite3_step(istmt) == SQLITE_DONE) {
+                created++;
+                /* Get the new Method node ID and create DEFINES_METHOD edge */
+                int64_t method_id = sqlite3_last_insert_rowid(s->db);
+                sqlite3_stmt *estmt = NULL;
+                if (sqlite3_prepare_v2(s->db,
+                    "INSERT OR IGNORE INTO edges (project, source_id, target_id, type) "
+                    "VALUES (?1, ?2, ?3, 'DEFINES_METHOD')",
+                    -1, &estmt, NULL) == SQLITE_OK) {
+                    bind_text(estmt, 1, project);
+                    sqlite3_bind_int64(estmt, 2, base_repo_id);
+                    sqlite3_bind_int64(estmt, 3, method_id);
+                    sqlite3_step(estmt);
+                    sqlite3_finalize(estmt);
+                }
+            }
+            sqlite3_finalize(istmt);
+        }
+    }
+    free(class_qn);
+
+    char cbuf[32]; snprintf(cbuf, sizeof(cbuf), "%d", created);
+    cbm_log_info("store.crud_inheritance", "methods_added", cbuf);
+    return created;
+}
+

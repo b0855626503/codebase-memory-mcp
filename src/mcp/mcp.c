@@ -1687,6 +1687,56 @@ static char *handle_search_graph(cbm_mcp_server_t *srv, const char *args) {
         return cbm_mcp_text_result("relationship must be uppercase letters and underscores", true);
     }
 
+    /* Validate regex patterns early — reject invalid regex with a clear error
+     * instead of silently returning 0 results (#481). */
+    if (name_pattern) {
+        cbm_regex_t re;
+        if (cbm_regcomp(&re, name_pattern, CBM_REG_EXTENDED | CBM_REG_NOSUB) != 0) {
+            size_t msg_len = strlen(name_pattern) + 128;
+            char *err_msg = malloc(msg_len);
+            if (err_msg) {
+                snprintf(err_msg, msg_len,
+                         "Invalid regex in name_pattern: \"%s\". "
+                         "Hint: use .* for wildcards (not glob *), "
+                         "[...] for character classes.",
+                         name_pattern);
+            }
+            free(project);
+            free(label);
+            free(name_pattern);
+            free(qn_pattern);
+            free(file_pattern);
+            free(relationship);
+            char *result = cbm_mcp_text_result(err_msg ? err_msg : "Invalid regex in name_pattern", true);
+            free(err_msg);
+            return result;
+        }
+        cbm_regfree(&re);
+    }
+    if (qn_pattern) {
+        cbm_regex_t re;
+        if (cbm_regcomp(&re, qn_pattern, CBM_REG_EXTENDED | CBM_REG_NOSUB) != 0) {
+            size_t msg_len = strlen(qn_pattern) + 128;
+            char *err_msg = malloc(msg_len);
+            if (err_msg) {
+                snprintf(err_msg, msg_len,
+                         "Invalid regex in qn_pattern: \"%s\". "
+                         "Hint: use .* for wildcards (not glob *).",
+                         qn_pattern);
+            }
+            free(project);
+            free(label);
+            free(name_pattern);
+            free(qn_pattern);
+            free(file_pattern);
+            free(relationship);
+            char *result = cbm_mcp_text_result(err_msg ? err_msg : "Invalid regex in qn_pattern", true);
+            free(err_msg);
+            return result;
+        }
+        cbm_regfree(&re);
+    }
+
     cbm_search_params_t params = {
         .project = project,
         .label = label,

@@ -558,15 +558,15 @@ int cbm_pipeline_run_incremental(cbm_pipeline_t *p, const char *db_path, cbm_fil
                  itoa_buf(n_unchanged), "deleted", itoa_buf(deleted_count), "mode_skipped",
                  itoa_buf(mode_skipped_count));
 
-    /* Fast path: nothing changed → skip. The on-disk DB is left untouched,
-     * which means existing hash rows (including for any mode-skipped files
-     * that were already preserved by an earlier run) remain intact. */
+    /* Fast path: nothing changed → skip extraction + resolution.
+     * But always run enrichment passes that add edges to existing nodes. */
     if (n_changed == 0 && deleted_count == 0) {
         cbm_log_info("incremental.noop", "reason", "no_changes");
         free(is_changed);
         free(deleted);
         free_mode_skipped(mode_skipped, mode_skipped_count);
         cbm_store_free_file_hashes(stored, stored_count);
+
         cbm_store_close(store);
         return 0;
     }

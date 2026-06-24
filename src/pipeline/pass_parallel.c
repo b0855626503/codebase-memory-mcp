@@ -1775,7 +1775,52 @@ static void resolve_file_calls(resolve_ctx_t *rc, resolve_worker_state_t *ws, CB
          * pipeline (pass_calls.c) — both paths must admit the same set of
          * LSP overrides so a project doesn't get different attributions
          * depending on whether parallel mode kicked in. */
+        /* P0: Field-type resolution FIRST. Field.return_type + INHERITS. */
         cbm_resolution_t res = {0};
+        /* P0 DEBUG: log ALL calls to see receiver_expr coverage */
+        if (call->callee_name && strstr(call->callee_name, "create")) {
+            cbm_log_info("p0.all_create",
+                "callee", call->callee_name,
+                "has_receiver", call->receiver_expr ? "YES" : "NO",
+                "receiver", call->receiver_expr ? call->receiver_expr : "(null)",
+                "enclosing", call->enclosing_func_qn ? call->enclosing_func_qn : "(null)");
+        }
+        if (call->receiver_expr && call->enclosing_func_qn) {
+            /* P0 DEBUG: log EVERY member call that reaches this path */
+            cbm_log_info("p0.call_debug",
+                "callee", call->callee_name ? call->callee_name : "(null)",
+                "receiver", call->receiver_expr,
+                "enclosing", call->enclosing_func_qn);
+            const char *ld = strrchr(call->enclosing_func_qn, '.');
+            if (ld && ld != call->enclosing_func_qn) {
+                size_t cl = (size_t)(ld - call->enclosing_func_qn);
+                if (strstr(call->enclosing_func_qn, "BankPaymentRepository") &&
+                    call->callee_name && strstr(call->callee_name, "allLog")) {
+                    char cl_buf[32];
+                    snprintf(cl_buf, sizeof(cl_buf), "%zu", cl);
+                    cbm_log_info("p0.cl_check", "enclosing", call->enclosing_func_qn,
+                        "cl", cl_buf, "ld_pos", ld ? "ok" : "null");
+                }
+                if (cl < CBM_SZ_256) {
+                    char cq[CBM_SZ_256];
+                    memcpy(cq, call->enclosing_func_qn, cl); cq[cl] = '\0';
+                    const char *mn = call->callee_name;
+                    const char *d = strrchr(mn, '.'); if (d) mn = d + 1;
+                    const char *a = strrchr(mn, '>'); if (a) mn = a + 1;
+                    cbm_resolution_t fr = cbm_registry_resolve_member_call(
+                        rc->registry, rc->main_gbuf, call->receiver_expr, mn, cq);
+                    /* P0 debug: log result */
+                    if (strstr(cq, "BankPaymentRepository")) {
+                        cbm_log_info("p0.field_resolve",
+                            "class", cq,
+                            "method", mn,
+                            "receiver", call->receiver_expr,
+                            "result", fr.qualified_name ? fr.qualified_name : "(null)");
+                    }
+                    if (fr.qualified_name) { res = fr; }
+                }
+            }
+        }
         const CBMResolvedCall *lsp = NULL;
         _rc_t0 = extract_now_ns();
         if (lsp_idx && call->enclosing_func_qn) {
@@ -1806,7 +1851,7 @@ static void resolve_file_calls(resolve_ctx_t *rc, resolve_worker_state_t *ws, CB
             lsp_target =
                 cbm_pipeline_lsp_target_node(rc->main_gbuf, rc->project_name, lsp->callee_qn);
             if (lsp_target) {
-                res.qualified_name = lsp_target->qualified_name;
+                if (!res.qualified_name || res.confidence < (double)lsp->confidence) { res.qualified_name = lsp_target->qualified_name; }
                 res.strategy = lsp->strategy ? lsp->strategy : "lsp_override";
                 res.confidence = (double)lsp->confidence;
                 res.candidate_count = 1;

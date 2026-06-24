@@ -359,6 +359,8 @@ int cbm_store_count_edges(cbm_store_t *s, const char *project);
 
 /* Count edges of given type. */
 int cbm_store_count_edges_by_type(cbm_store_t *s, const char *project, const char *type);
+int cbm_store_enrich_model_ownership(cbm_store_t *s, const char *project, const char *repo_path);
+int cbm_store_enrich_crud_inheritance(cbm_store_t *s, const char *project);
 
 /* Delete all edges for a project. */
 int cbm_store_delete_edges_by_project(cbm_store_t *s, const char *project);

@@ -333,10 +333,54 @@ static const cbm_gbuf_node_t *calls_find_source(cbm_pipeline_ctx_t *ctx, const c
 }
 
 /* Resolve one call and emit the appropriate edge. Returns 1 if resolved, 0 if not. */
+/* Blocker #1: Laravel/PHP framework helper functions.
+ * Skip resolution — never create CALLS edges from helpers to business symbols.
+ * Duplicated from pass_parallel.c — keep in sync. */
+static bool is_framework_helper(const char *name) {
+    if (!name) return false;
+    return (strcmp(name, "now") == 0 || strcmp(name, "request") == 0 ||
+            strcmp(name, "response") == 0 || strcmp(name, "config") == 0 ||
+            strcmp(name, "cache") == 0 || strcmp(name, "auth") == 0 ||
+            strcmp(name, "session") == 0 || strcmp(name, "redirect") == 0 ||
+            strcmp(name, "abort") == 0 || strcmp(name, "validator") == 0 ||
+            strcmp(name, "view") == 0 || strcmp(name, "cookie") == 0 ||
+            strcmp(name, "event") == 0 || strcmp(name, "dispatch") == 0 ||
+            strcmp(name, "logger") == 0 || strcmp(name, "info") == 0 ||
+            strcmp(name, "base_path") == 0 || strcmp(name, "public_path") == 0 ||
+            strcmp(name, "storage_path") == 0 || strcmp(name, "resource_path") == 0 ||
+            strcmp(name, "app_path") == 0 || strcmp(name, "config_path") == 0 ||
+            strcmp(name, "database_path") == 0 || strcmp(name, "lang_path") == 0 ||
+            strcmp(name, "env") == 0 || strcmp(name, "route") == 0 ||
+            strcmp(name, "back") == 0 || strcmp(name, "url") == 0 ||
+            strcmp(name, "action") == 0 || strcmp(name, "asset") == 0 ||
+            strcmp(name, "mix") == 0 || strcmp(name, "vite") == 0 ||
+            strcmp(name, "csrf_token") == 0 || strcmp(name, "csrf_field") == 0 ||
+            strcmp(name, "method_field") == 0 || strcmp(name, "old") == 0 ||
+            strcmp(name, "rescue") == 0 || strcmp(name, "retry") == 0 ||
+            strcmp(name, "report") == 0 || strcmp(name, "bcrypt") == 0 ||
+            strcmp(name, "date") == 0 || strcmp(name, "today") == 0 ||
+            strcmp(name, "head") == 0 || strcmp(name, "last") == 0 ||
+            strcmp(name, "value") == 0 ||
+            strcmp(name, "collect") == 0 || strcmp(name, "data_get") == 0 ||
+            strcmp(name, "data_set") == 0 || strcmp(name, "class_basename") == 0 ||
+            strcmp(name, "e") == 0 || strcmp(name, "blank") == 0 ||
+            strcmp(name, "filled") == 0 || strcmp(name, "optional") == 0 ||
+            strcmp(name, "tap") == 0 || strcmp(name, "throw_if") == 0 ||
+            strcmp(name, "throw_unless") == 0 || strcmp(name, "transform") == 0 ||
+            strcmp(name, "windows_os") == 0 || strcmp(name, "__") == 0 ||
+            strcmp(name, "trans") == 0 || strcmp(name, "trans_choice") == 0 ||
+            strcmp(name, "policy") == 0 || strcmp(name, "gate") == 0 ||
+            strcmp(name, "dispatch_sync") == 0 || strcmp(name, "dispatch_now") == 0);
+}
+
 static int resolve_single_call(cbm_pipeline_ctx_t *ctx, CBMCall *call,
                                const CBMResolvedCallArray *lsp_calls, const char *rel,
                                const char *module_qn, const char **imp_keys, const char **imp_vals,
                                int imp_count) {
+    /* Blocker #1: Skip framework helpers — never resolve to business symbols. */
+    if (call->callee_name && is_framework_helper(call->callee_name)) {
+        return 0;
+    }
     const cbm_gbuf_node_t *source_node = calls_find_source(ctx, rel, call->enclosing_func_qn);
     if (!source_node) {
         return 0;

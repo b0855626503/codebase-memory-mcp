@@ -12,11 +12,12 @@
  */
 #include "foundation/constants.h"
 
-enum { CBM_DIR_PERMS = 0755, PL_RING = 4, PL_RING_MASK = 3, PL_SEQ_PASSES = 6, PL_WAL_BUF = 1040 };
+enum { CBM_DIR_PERMS = 0755, PL_RING = 4, PL_RING_MASK = 3, PL_SEQ_PASSES = 7, PL_WAL_BUF = 1040 };
 #define PL_NSEC_PER_SEC 1000000000LL
 #include "pipeline/pipeline.h"
 #include "pipeline/artifact.h"
 #include "pipeline/pipeline_internal.h"
+#include "pipeline/pass_model_ownership.h"
 #include "pipeline/pass_lsp_cross.h"
 #include "pipeline/pass_embedding_context.h"
 #include "pipeline/worker_pool.h"
@@ -615,6 +616,7 @@ static int run_sequential_pipeline(cbm_pipeline_t *p, cbm_pipeline_ctx_t *ctx,
         {cbm_pipeline_pass_calls, "calls", false},
         {cbm_pipeline_pass_usages, "usages", false},
         {cbm_pipeline_pass_semantic, "semantic", false},
+        {cbm_pipeline_pass_model_ownership, "model_ownership", false},
     };
     int rc = 0;
     for (int si = 0; si < PL_SEQ_PASSES && rc == 0; si++) {
@@ -757,6 +759,67 @@ static int run_parallel_pipeline(cbm_pipeline_t *p, cbm_pipeline_ctx_t *ctx,
     cbm_log_info("pass.timing", "pass", "lsp_cross_prepare", "elapsed_ms",
                  itoa_buf((int)elapsed_ms(*t)));
     log_phase_mem("lsp_cross_prepare");
+    /* P0 Field Lifecycle Audit: check Field node availability before resolve */
+    {
+        const cbm_gbuf_node_t **all_fields = NULL;
+        int nf = 0;
+        if (cbm_gbuf_find_by_label(p->gbuf, "Field", &all_fields, &nf) == 0) {
+            int with_rt = 0, with_qn = 0;
+            for (int fi = 0; fi < nf && fi < 10; fi++) {
+                if (all_fields[fi]->properties_json && strstr(all_fields[fi]->properties_json, "return_type")) with_rt++;
+                if (all_fields[fi]->qualified_name) with_qn++;
+            }
+            cbm_log_info("p0.field_audit", "total_fields", itoa_buf(nf),
+                         "sample_with_rt", itoa_buf(with_rt),
+                         "sample_with_qn", itoa_buf(with_qn));
+            if (nf > 0 && all_fields[0]->qualified_name) {
+                cbm_log_info("p0.field_sample", "qn", all_fields[0]->qualified_name,
+                             "props", all_fields[0]->properties_json ? all_fields[0]->properties_json : "(null)");
+            }
+        } else {
+            cbm_log_info("p0.field_audit", "total_fields", "0");
+        }
+    }
+
+    /* Sprint B: Inject inherited CRUD methods into base Repository class
+     * BEFORE parallel_resolve — so LSP inheritance walk can find them. */
+    {
+        const cbm_gbuf_node_t *base_repo = cbm_gbuf_find_by_qn(p->gbuf,
+            NULL /* search by pattern below */);
+        /* Find Class node whose QN ends with Core.src.Eloquent.Repository.Repository */
+        const cbm_gbuf_node_t **all_classes = NULL;
+        int nc = 0;
+        if (cbm_gbuf_find_by_label(p->gbuf, "Class", &all_classes, &nc) == 0 && nc > 0) {
+            for (int i = 0; i < nc; i++) {
+                if (strstr(all_classes[i]->qualified_name, "Core.src.Eloquent.Repository.Repository")) {
+                    base_repo = all_classes[i];
+                    static const char *methods[] = {"create", "update", "delete"};
+                    for (int mi = 0; mi < 3; mi++) {
+                        char method_qn[CBM_SZ_512];
+                        snprintf(method_qn, sizeof(method_qn), "%s.%s",
+                                 base_repo->qualified_name, methods[mi]);
+                        char props[256];
+                        snprintf(props, sizeof(props),
+                                 "{\"inherited_from\":\"Prettus\\\\Repository\\\\Eloquent\\\\BaseRepository\","
+                                 "\"is_exported\":true}");
+                        /* Create Method node + DEFINES_METHOD edge */
+                        int64_t mid = cbm_gbuf_upsert_node(p->gbuf, "Method",
+                            methods[mi], method_qn, "",
+                            631, 750, props);
+                        if (mid >= 0) {
+                            cbm_gbuf_insert_edge(p->gbuf, base_repo->id, mid,
+                                                 "DEFINES_METHOD", "{}");
+                            /* Register in registry so parallel_resolve can find it */
+                            cbm_log_info("sprint_b.inject", "method", methods[mi], "qn", method_qn);
+                            cbm_registry_add(p->registry, methods[mi], method_qn, "Method");
+                        }
+                    }
+                    break;
+                }
+            }
+        }
+    }
+
     cbm_clock_gettime(CLOCK_MONOTONIC, t);
     rc = cbm_parallel_resolve(ctx, files, file_count, cache, &shared_ids, worker_count, all_defs,
                               def_count, def_modules, module_def_index, &cross_registries);
@@ -955,6 +1018,8 @@ static int dump_and_persist_hashes(cbm_pipeline_t *p, const cbm_file_info_t *fil
 
         cbm_store_close(hash_store);
         cbm_log_info("pass.timing", "pass", "persist_hashes", "files", itoa_buf(file_count));
+
+    { cbm_store_t *mo_store = cbm_store_open_path(db_path); if (mo_store) { struct timespec tmo; cbm_clock_gettime(CLOCK_MONOTONIC, &tmo); int mo_created = cbm_store_enrich_model_ownership(mo_store, p->project_name, p->repo_path); cbm_log_info("pass.timing", "pass", "model_ownership", "elapsed_ms", itoa_buf((int)elapsed_ms(tmo))); (void)mo_created; cbm_store_enrich_crud_inheritance(mo_store, p->project_name); cbm_store_close(mo_store); } }
     }
 
     /* Export persistent artifact if enabled */

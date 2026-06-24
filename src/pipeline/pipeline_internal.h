@@ -453,6 +453,7 @@ int cbm_pipeline_pass_definitions(cbm_pipeline_ctx_t *ctx, const cbm_file_info_t
 int cbm_pipeline_pass_k8s(cbm_pipeline_ctx_t *ctx, const cbm_file_info_t *files, int file_count);
 
 int cbm_pipeline_pass_calls(cbm_pipeline_ctx_t *ctx, const cbm_file_info_t *files, int file_count);
+int cbm_pipeline_pass_model_ownership(cbm_pipeline_ctx_t *ctx, const cbm_file_info_t *files, int file_count);
 
 /* Cross-file LSP type-aware call resolution pass. Augments per-file
  * resolved_calls with cross-file resolutions before call edges are emitted.

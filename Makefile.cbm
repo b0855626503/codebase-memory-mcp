@@ -192,6 +192,7 @@ PIPELINE_SRCS = \
     src/pipeline/pass_configlink.c \
     src/pipeline/pass_route_nodes.c \
     src/pipeline/pass_route_resolve.c \
+    src/pipeline/pass_model_ownership.c \
     src/pipeline/pass_blade_calls.c \
     src/pipeline/pass_embedding_context.c \
     src/pipeline/pass_enrichment.c \
