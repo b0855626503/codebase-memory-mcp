@@ -25,7 +25,7 @@ enum { REG_MAX_CANDIDATES = 256 };
 #define REG_FULL_CONF 1.0
 #define REG_HALF_PENALTY 0.5
 
-#define DEFAULT_CONFIDENCE 0.5
+#define DEFAULT_CONFIDENCE 0.67  /* import-unreachable penalty: unique_name 0.75*0.67=0.50 */
 #include "pipeline/pipeline.h"
 #include "foundation/compat.h" /* CBM_TLS */
 #include "foundation/hash_table.h"
@@ -1089,18 +1089,9 @@ cbm_resolution_t cbm_registry_resolve_member_call(const cbm_registry_t *r, const
         cbm_gbuf_find_class_field(gbuf, enclosing_class_qn, prop);
     /* P0 debug: trace field lookup */
     if (strstr(enclosing_class_qn, "BankPaymentRepository") && prop && strstr(prop, "allLog")) {
-        cbm_log_info("p0.field_lookup_step2",
-            "class", enclosing_class_qn,
-            "prop", prop,
-            "field_node", field_node ? "FOUND" : "NULL",
-            "has_json", field_node && field_node->properties_json ? "YES" : "NO");
     }
     if (!field_node || !field_node->properties_json) {
         /* Sprint P0 debug: log why field lookup failed */
-        cbm_log_info("member_call.field_miss",
-                     "class", enclosing_class_qn,
-                     "prop", prop,
-                     "field_found", field_node ? "yes_no_json" : "no");
         return cbm_registry_resolve_by_property(r, receiver_expr, method_name);
     }
 
@@ -1111,28 +1102,14 @@ cbm_resolution_t cbm_registry_resolve_member_call(const cbm_registry_t *r, const
     const char *rt_start = strstr(props, rt_key);
     /* P0 debug: check return_type extraction */
     if (strstr(enclosing_class_qn, "BankPaymentRepository") && prop && strstr(prop, "allLog")) {
-        cbm_log_info("p0.step3_rt",
-            "class", enclosing_class_qn,
-            "prop", prop,
-            "props", props,
-            "rt_found", rt_start ? "YES" : "NO");
     }
     if (!rt_start) {
-        cbm_log_info("member_call.no_return_type",
-                     "class", enclosing_class_qn,
-                     "prop", prop,
-                     "json", props);
         return empty_result();
     }
     rt_start += strlen(rt_key);
     const char *rt_end = strchr(rt_start, '"');
     if (!rt_end || rt_end == rt_start) {
         if (strstr(enclosing_class_qn, "BankPaymentRepository") && prop && strstr(prop, "allLog")) {
-            cbm_log_info("p0.step3_rt_end_fail",
-                "class", enclosing_class_qn,
-                "prop", prop,
-                "rt_end_null", rt_end ? "no" : "yes",
-                "rt_end_eq_start", (rt_end == rt_start) ? "yes" : "no");
         }
         return empty_result();
     }
@@ -1141,10 +1118,6 @@ cbm_resolution_t cbm_registry_resolve_member_call(const cbm_registry_t *r, const
         if (strstr(enclosing_class_qn, "BankPaymentRepository") && prop && strstr(prop, "allLog")) {
             char rtl_buf[32];
             snprintf(rtl_buf, sizeof(rtl_buf), "%zu", rt_len);
-            cbm_log_info("p0.step3_rt_len_fail",
-                "class", enclosing_class_qn,
-                "prop", prop,
-                "rt_len", rtl_buf);
         }
         return empty_result();
     }
@@ -1154,16 +1127,9 @@ cbm_resolution_t cbm_registry_resolve_member_call(const cbm_registry_t *r, const
 
     /* P0: unconditional trace */
     if (strstr(enclosing_class_qn, "BankPaymentRepository") && prop && strstr(prop, "allLog")) {
-        cbm_log_info("p0.trace_after_memcpy",
-            "class", enclosing_class_qn, "prop", prop, "type_name", type_name);
     }
 
     /* Sprint P0 debug: log successful type resolution */
-    cbm_log_info("member_call.field_ok",
-                 "class", enclosing_class_qn,
-                 "prop", prop,
-                 "field_type", type_name,
-                 "method", method_name);
 
     /* Step 4: Resolve type_name to a fully-qualified class QN.
      * The type_name from PHP may be a short name (e.g. "PointsService")
@@ -1243,7 +1209,14 @@ cbm_resolution_t cbm_registry_resolve_member_call(const cbm_registry_t *r, const
                         while (*qseg) {
                             const char *qend = strchr(qseg, '.');
                             size_t qlen = qend ? (size_t)(qend - qseg) : strlen(qseg);
-                            if (qlen == tlen && strncmp(qseg, tseg, tlen) == 0) {
+                            /* Exact match or prefix match: "Scorem" prefix-matches
+                             * "ScoreMatrix", fixing Field return_type vs actual QN
+                             * path mismatches from PHP docblocks.
+                             * Require tlen >= 3 for prefix match to avoid
+                             * single-char false positives. */
+                            if (strncmp(qseg, tseg, tlen) == 0 &&
+                                (qlen == tlen ||          /* exact segment match */
+                                 (qlen > tlen && tlen >= 3))) { /* prefix match, min 3 chars */
                                 qseg += tlen;
                                 seg_found = true;
                                 break;
@@ -1331,13 +1304,6 @@ cbm_resolution_t cbm_registry_resolve_member_call(const cbm_registry_t *r, const
         }
     }
 member_call_class_resolved:
-    if (strstr(enclosing_class_qn, "BankPaymentRepository") && prop && strstr(prop, "allLog")) {
-        cbm_log_info("p0.step4_result",
-            "class", enclosing_class_qn,
-            "prop", prop,
-            "type_name_from_rt", type_name,
-            "resolved_class_qn", class_qn ? class_qn : "(null)");
-    }
     if (!class_qn) {
         return empty_result();
     }
@@ -1383,12 +1349,6 @@ member_call_class_resolved:
         if (strstr(enclosing_class_qn, "BankPaymentRepository") && prop && strstr(prop, "allLog")) {
             char ebuf[32];
             snprintf(ebuf, sizeof(ebuf), "%d", ecount);
-            cbm_log_info("p0.step6_inherits",
-                "class", walk_qn,
-                "inherit_edges", ebuf,
-                "parent", (ecount > 0 && edges[0]) ?
-                    (cbm_gbuf_find_by_id(gbuf, edges[0]->target_id) ?
-                     cbm_gbuf_find_by_id(gbuf, edges[0]->target_id)->qualified_name : "(parent_null)") : "(none)");
         }
         if (ecount == 0) break;
         walk_node = cbm_gbuf_find_by_id(gbuf, edges[0]->target_id);
@@ -1397,19 +1357,15 @@ member_call_class_resolved:
     if (strstr(enclosing_class_qn, "BankPaymentRepository") && prop && strstr(prop, "allLog")) {
         char ws_buf[32];
         snprintf(ws_buf, sizeof(ws_buf), "%d", walk_steps);
-        cbm_log_info("p0.step6_walk",
-            "class", enclosing_class_qn,
-            "prop", prop,
-            "method", method_name,
-            "start_class", class_qn,
-            "walk_steps", ws_buf,
-            "found", target_label ? "YES" : "NO",
-            "resolved_qn", target_label ? resolved_qn : "(null)");
     }
     if (!target_label) {
         return empty_result();
     }
-    cbm_resolution_t res = {.qualified_name = resolved_qn,
+    /* resolved_qn points to local stack buffer (target_qn or inherit_target).
+     * Must strdup before returning — caller receives a heap pointer it can use
+     * safely after this function's stack frame is gone. Caller does NOT free
+     * (matches registry-owned pointer convention used by other resolvers). */
+    cbm_resolution_t res = {.qualified_name = strdup(resolved_qn),
                             .strategy = "class_field_type",
                             .confidence = 0.90,
                             .candidate_count = 1};

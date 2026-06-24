@@ -1277,6 +1277,14 @@ static void emit_config_edge(cbm_gbuf_t *gbuf, const cbm_gbuf_node_t *source,
 static void emit_normal_calls_edge(cbm_gbuf_t *gbuf, const cbm_gbuf_node_t *source,
                                    const cbm_gbuf_node_t *target, const CBMCall *call,
                                    const cbm_resolution_t *res) {
+    /* Minimum confidence threshold for CALLS edges.
+     * unique_name without import reachability scores 0.50
+     * (0.75 * IMPORT_PENALTY 0.67). Filter only truly garbage edges.
+     * High-quality strategies all score ≥ 0.60. */
+    if (res->confidence < 0.40) {
+        return;
+    }
+
     char esc_c[CBM_SZ_256];
     cbm_json_escape(esc_c, sizeof(esc_c), call->callee_name);
     char props[CBM_SZ_2K];
@@ -1711,6 +1719,76 @@ static void lsp_idx_free_key(const char *key, void *value, void *ud) {
     free((char *)key);
 }
 
+/* Blocker #1: Laravel/PHP framework helper functions.
+ * Skip resolution — never create CALLS edges from helpers to business symbols.
+ * Duplicated from pass_calls.c — keep in sync. */
+static bool is_framework_helper(const char *name) {
+    if (!name) return false;
+    return (strcmp(name, "now") == 0 || strcmp(name, "request") == 0 ||
+            strcmp(name, "response") == 0 || strcmp(name, "config") == 0 ||
+            strcmp(name, "cache") == 0 || strcmp(name, "auth") == 0 ||
+            strcmp(name, "session") == 0 || strcmp(name, "redirect") == 0 ||
+            strcmp(name, "abort") == 0 || strcmp(name, "validator") == 0 ||
+            strcmp(name, "view") == 0 || strcmp(name, "cookie") == 0 ||
+            strcmp(name, "event") == 0 || strcmp(name, "dispatch") == 0 ||
+            strcmp(name, "logger") == 0 || strcmp(name, "info") == 0 ||
+            strcmp(name, "base_path") == 0 || strcmp(name, "public_path") == 0 ||
+            strcmp(name, "storage_path") == 0 || strcmp(name, "resource_path") == 0 ||
+            strcmp(name, "app_path") == 0 || strcmp(name, "config_path") == 0 ||
+            strcmp(name, "database_path") == 0 || strcmp(name, "lang_path") == 0 ||
+            strcmp(name, "env") == 0 || strcmp(name, "route") == 0 ||
+            strcmp(name, "back") == 0 || strcmp(name, "url") == 0 ||
+            strcmp(name, "action") == 0 || strcmp(name, "asset") == 0 ||
+            strcmp(name, "mix") == 0 || strcmp(name, "vite") == 0 ||
+            strcmp(name, "csrf_token") == 0 || strcmp(name, "csrf_field") == 0 ||
+            strcmp(name, "method_field") == 0 || strcmp(name, "old") == 0 ||
+            strcmp(name, "rescue") == 0 || strcmp(name, "retry") == 0 ||
+            strcmp(name, "report") == 0 || strcmp(name, "bcrypt") == 0 ||
+            strcmp(name, "date") == 0 || strcmp(name, "today") == 0 ||
+            strcmp(name, "head") == 0 || strcmp(name, "last") == 0 ||
+            strcmp(name, "value") == 0 ||
+            strcmp(name, "collect") == 0 || strcmp(name, "data_get") == 0 ||
+            strcmp(name, "data_set") == 0 || strcmp(name, "class_basename") == 0 ||
+            strcmp(name, "e") == 0 || strcmp(name, "blank") == 0 ||
+            strcmp(name, "filled") == 0 || strcmp(name, "optional") == 0 ||
+            strcmp(name, "tap") == 0 || strcmp(name, "throw_if") == 0 ||
+            strcmp(name, "throw_unless") == 0 || strcmp(name, "transform") == 0 ||
+            strcmp(name, "windows_os") == 0 || strcmp(name, "__") == 0 ||
+            strcmp(name, "trans") == 0 || strcmp(name, "trans_choice") == 0 ||
+            strcmp(name, "policy") == 0 || strcmp(name, "gate") == 0 ||
+            strcmp(name, "dispatch_sync") == 0 || strcmp(name, "dispatch_now") == 0);
+}
+
+/* Common method names that cause false positives when resolved via unique_name
+ * for member calls ($this->x->method()). Block registry fallback for these. */
+static bool is_common_method_name(const char *name) {
+    if (!name) return true;
+    const char *dot = strrchr(name, '.');
+    const char *arrow = strrchr(name, '>');
+    const char *bare = name;
+    if (dot && dot > bare) bare = dot + 1;
+    if (arrow && arrow > bare) bare = arrow + 1;
+    return (strcmp(bare, "create") == 0 || strcmp(bare, "find") == 0 ||
+            strcmp(bare, "get") == 0 || strcmp(bare, "set") == 0 ||
+            strcmp(bare, "update") == 0 || strcmp(bare, "delete") == 0 ||
+            strcmp(bare, "save") == 0 || strcmp(bare, "handle") == 0 ||
+            strcmp(bare, "process") == 0 || strcmp(bare, "init") == 0 ||
+            strcmp(bare, "validate") == 0 || strcmp(bare, "parse") == 0 ||
+            strcmp(bare, "build") == 0 || strcmp(bare, "run") == 0 ||
+            strcmp(bare, "start") == 0 || strcmp(bare, "stop") == 0 ||
+            strcmp(bare, "check") == 0 || strcmp(bare, "execute") == 0 ||
+            strcmp(bare, "load") == 0 || strcmp(bare, "render") == 0 ||
+            strcmp(bare, "send") == 0 || strcmp(bare, "format") == 0 ||
+            strcmp(bare, "convert") == 0 || strcmp(bare, "filter") == 0 ||
+            strcmp(bare, "search") == 0 || strcmp(bare, "sort") == 0 ||
+            strcmp(bare, "count") == 0 || strcmp(bare, "list") == 0 ||
+            strcmp(bare, "generate") == 0 || strcmp(bare, "compute") == 0 ||
+            strcmp(bare, "notify") == 0 || strcmp(bare, "dispatch") == 0 ||
+            strcmp(bare, "resolve") == 0 || strcmp(bare, "match") == 0 ||
+            strcmp(bare, "test") == 0 || strcmp(bare, "first") == 0 ||
+            strcmp(bare, "all") == 0 || strcmp(bare, "make") == 0);
+}
+
 /* Resolve calls for one file and emit CALLS/HTTP_CALLS/ASYNC_CALLS edges. */
 static void resolve_file_calls(resolve_ctx_t *rc, resolve_worker_state_t *ws, CBMFileResult *result,
                                const char *rel, const char *module_qn, const char **imp_keys,
@@ -1761,6 +1839,10 @@ static void resolve_file_calls(resolve_ctx_t *rc, resolve_worker_state_t *ws, CB
         if (!call->callee_name) {
             continue;
         }
+        /* Blocker #1: Skip framework helpers — never resolve to business symbols. */
+        if (is_framework_helper(call->callee_name)) {
+            continue;
+        }
         uint64_t _rc_t0 = extract_now_ns();
         const cbm_gbuf_node_t *source_node =
             find_source_node(rc->main_gbuf, rc->project_name, rel, call->enclosing_func_qn);
@@ -1779,18 +1861,9 @@ static void resolve_file_calls(resolve_ctx_t *rc, resolve_worker_state_t *ws, CB
         cbm_resolution_t res = {0};
         /* P0 DEBUG: log ALL calls to see receiver_expr coverage */
         if (call->callee_name && strstr(call->callee_name, "create")) {
-            cbm_log_info("p0.all_create",
-                "callee", call->callee_name,
-                "has_receiver", call->receiver_expr ? "YES" : "NO",
-                "receiver", call->receiver_expr ? call->receiver_expr : "(null)",
-                "enclosing", call->enclosing_func_qn ? call->enclosing_func_qn : "(null)");
         }
         if (call->receiver_expr && call->enclosing_func_qn) {
             /* P0 DEBUG: log EVERY member call that reaches this path */
-            cbm_log_info("p0.call_debug",
-                "callee", call->callee_name ? call->callee_name : "(null)",
-                "receiver", call->receiver_expr,
-                "enclosing", call->enclosing_func_qn);
             const char *ld = strrchr(call->enclosing_func_qn, '.');
             if (ld && ld != call->enclosing_func_qn) {
                 size_t cl = (size_t)(ld - call->enclosing_func_qn);
@@ -1798,8 +1871,6 @@ static void resolve_file_calls(resolve_ctx_t *rc, resolve_worker_state_t *ws, CB
                     call->callee_name && strstr(call->callee_name, "allLog")) {
                     char cl_buf[32];
                     snprintf(cl_buf, sizeof(cl_buf), "%zu", cl);
-                    cbm_log_info("p0.cl_check", "enclosing", call->enclosing_func_qn,
-                        "cl", cl_buf, "ld_pos", ld ? "ok" : "null");
                 }
                 if (cl < CBM_SZ_256) {
                     char cq[CBM_SZ_256];
@@ -1811,11 +1882,6 @@ static void resolve_file_calls(resolve_ctx_t *rc, resolve_worker_state_t *ws, CB
                         rc->registry, rc->main_gbuf, call->receiver_expr, mn, cq);
                     /* P0 debug: log result */
                     if (strstr(cq, "BankPaymentRepository")) {
-                        cbm_log_info("p0.field_resolve",
-                            "class", cq,
-                            "method", mn,
-                            "receiver", call->receiver_expr,
-                            "result", fr.qualified_name ? fr.qualified_name : "(null)");
                     }
                     if (fr.qualified_name) { res = fr; }
                 }
@@ -1957,7 +2023,59 @@ static void resolve_file_calls(resolve_ctx_t *rc, resolve_worker_state_t *ws, CB
              * Derive enclosing class QN from the function QN, then look up
              * the property's type via class Field definitions in the gbuf. */
             bool has_receiver = (call->receiver_expr != NULL);
-            if (has_receiver && call->enclosing_func_qn) {
+            /* Container-call method chain: app(X::class)->method(), resolve(X)->method().
+             * receiver_expr is the container call expression (e.g. "app(PointsService::class)").
+             * Extract the class name, resolve the method on that class. */
+            if (has_receiver && call->receiver_expr && call->callee_name) {
+                const char *rx = call->receiver_expr;
+                const char *open = strchr(rx, '(');
+                if (open && (strncmp(rx, "app(", (size_t)(open - rx + 1)) == 0 ||
+                             strncmp(rx, "resolve(", (size_t)(open - rx + 1)) == 0 ||
+                             strncmp(rx, "make(", (size_t)(open - rx + 1)) == 0)) {
+                    /* Extract class name from container argument */
+                    const char *arg = open + 1;
+                    while (*arg == ' ') arg++;
+                    const char *arg_end = strchr(arg, ')');
+                    if (arg_end && arg_end > arg) {
+                        size_t alen = (size_t)(arg_end - arg);
+                        /* Strip ::class suffix if present */
+                        const char *cc = "::class";
+                        if (alen > 7 && strncmp(arg_end - 7, cc, 7) == 0) alen -= 7;
+                        /* Strip quotes if present */
+                        if (alen >= 2 && arg[0] == '\'' && arg[alen - 1] == '\'') {
+                            arg++; alen -= 2;
+                        } else if (alen >= 2 && arg[0] == '"' && arg[alen - 1] == '"') {
+                            arg++; alen -= 2;
+                        }
+                        if (alen > 0 && alen < CBM_SZ_256) {
+                            char class_qn[CBM_SZ_256];
+                            memcpy(class_qn, arg, alen);
+                            class_qn[alen] = '\0';
+                            /* Normalize \ to . for QN matching */
+                            for (char *p = class_qn; *p; p++) {
+                                if (*p == '\\') *p = '.';
+                            }
+                            /* Resolve method on the container-resolved class */
+                            const char *mn = call->callee_name;
+                            const char *ld = strrchr(mn, '.'); if (ld) mn = ld + 1;
+                            const char *la = strrchr(mn, '>'); if (la) mn = la + 1;
+                            char method_qn[CBM_SZ_512];
+                            snprintf(method_qn, sizeof(method_qn), "%s.%s", class_qn, mn);
+                            const cbm_gbuf_node_t *mtgt =
+                                cbm_gbuf_find_by_qn(rc->main_gbuf, method_qn);
+                            if (mtgt) {
+                                res.qualified_name = mtgt->qualified_name;
+                                res.strategy = "container_method_chain";
+                                res.confidence = 0.82;
+                                res.candidate_count = 1;
+                                ws->lsp_overrides++;
+                            }
+                        }
+                    }
+                }
+            }
+            if ((!res.qualified_name || res.qualified_name[0] == '\0') &&
+                has_receiver && call->enclosing_func_qn) {
                 const char *last_dot = strrchr(call->enclosing_func_qn, '.');
                 if (last_dot && last_dot != call->enclosing_func_qn) {
                     size_t class_len = (size_t)(last_dot - call->enclosing_func_qn);
@@ -1991,14 +2109,36 @@ static void resolve_file_calls(resolve_ctx_t *rc, resolve_worker_state_t *ws, CB
                     res = cbm_registry_resolve_by_property(
                         rc->registry, call->receiver_expr, mname);
                 }
-                if ((!res.qualified_name || res.qualified_name[0] == '\0') && !has_receiver) {
-                    /* Member calls ($this->x(), $obj->y()) — the receiver was
-                     * stripped from callee_name at extraction. Name-only matching
-                     * cannot safely resolve them: $this->create() matched
-                     * FreeGameController.create → fan_in 2868.
-                     * Block registry fallback. False negative > false positive. */
-                    res = cbm_registry_resolve(rc->registry, call->callee_name, module_qn, imp_keys,
-                                               imp_vals, imp_count);
+                if (!res.qualified_name || res.qualified_name[0] == '\0') {
+                    if (!has_receiver) {
+                        res = cbm_registry_resolve(rc->registry, call->callee_name, module_qn,
+                                                   imp_keys, imp_vals, imp_count);
+                    } else {
+                        /* Last-resort for member calls: registry by method name.
+                         * Block common names (create, find, get, handle...) that
+                         * cause false positives via unique_name, but allow specific
+                         * names like debit, redeem, register, join. */
+                        if (!is_common_method_name(call->callee_name)) {
+                            /* Strip receiver prefix from callee_name before
+                             * registry lookup. callee_name may be "$this.points.debit"
+                             * which cbm_registry_is_unresolved_receiver_prefix blocks.
+                             * Extract bare method name (last segment after '.' or '>'). */
+                            const char *bare = call->callee_name;
+                            const char *dot = strrchr(bare, '.');
+                            const char *arrow = strrchr(bare, '>');
+                            if (dot && dot > bare) bare = dot + 1;
+                            if (arrow && arrow > bare) bare = arrow + 1;
+                            res = cbm_registry_resolve(rc->registry, bare,
+                                                       module_qn, imp_keys, imp_vals, imp_count);
+                            if (res.qualified_name && res.qualified_name[0] &&
+                                res.confidence >= 0.55) {
+                                res.strategy = "member_registry_fallback";
+                                res.confidence *= 0.85; /* penalize for lack of type evidence */
+                            } else {
+                                res.qualified_name = NULL; /* drop low-confidence fallback */
+                            }
+                        }
+                    }
                 }
             }
         }

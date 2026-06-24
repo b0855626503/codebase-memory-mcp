@@ -310,6 +310,15 @@ static void emit_classified_edge(cbm_pipeline_ctx_t *ctx, const CBMCall *call,
     char esc_c2[CBM_SZ_256];
     cbm_json_escape(esc_c2, sizeof(esc_c2), call->callee_name);
     char props[CBM_SZ_512];
+
+    /* Minimum confidence threshold for CALLS edges.
+     * unique_name without import reachability scores 0.50
+     * (0.75 * IMPORT_PENALTY 0.67). Filter only truly garbage edges.
+     * High-quality strategies all score ≥ 0.60. */
+    if (res->confidence < 0.40) {
+        return;
+    }
+
     snprintf(props, sizeof(props),
              "{\"callee\":\"%s\",\"confidence\":%.2f,\"strategy\":\"%s\",\"candidates\":%d}",
              esc_c2, res->confidence, res->strategy ? res->strategy : "unknown",
@@ -333,9 +342,40 @@ static const cbm_gbuf_node_t *calls_find_source(cbm_pipeline_ctx_t *ctx, const c
 }
 
 /* Resolve one call and emit the appropriate edge. Returns 1 if resolved, 0 if not. */
+/* Common method names that cause false positives when resolved via unique_name
+ * for member calls ($this->x->method()). Block registry fallback for these.
+ * Duplicated in pass_parallel.c — keep in sync. */
+static bool is_common_method_name(const char *name) {
+    if (!name) return true;
+    const char *dot = strrchr(name, '.');
+    const char *arrow = strrchr(name, '>');
+    const char *bare = name;
+    if (dot && dot > bare) bare = dot + 1;
+    if (arrow && arrow > bare) bare = arrow + 1;
+    return (strcmp(bare, "create") == 0 || strcmp(bare, "find") == 0 ||
+            strcmp(bare, "get") == 0 || strcmp(bare, "set") == 0 ||
+            strcmp(bare, "update") == 0 || strcmp(bare, "delete") == 0 ||
+            strcmp(bare, "save") == 0 || strcmp(bare, "handle") == 0 ||
+            strcmp(bare, "process") == 0 || strcmp(bare, "init") == 0 ||
+            strcmp(bare, "validate") == 0 || strcmp(bare, "parse") == 0 ||
+            strcmp(bare, "build") == 0 || strcmp(bare, "run") == 0 ||
+            strcmp(bare, "start") == 0 || strcmp(bare, "stop") == 0 ||
+            strcmp(bare, "check") == 0 || strcmp(bare, "execute") == 0 ||
+            strcmp(bare, "load") == 0 || strcmp(bare, "render") == 0 ||
+            strcmp(bare, "send") == 0 || strcmp(bare, "format") == 0 ||
+            strcmp(bare, "convert") == 0 || strcmp(bare, "filter") == 0 ||
+            strcmp(bare, "search") == 0 || strcmp(bare, "sort") == 0 ||
+            strcmp(bare, "count") == 0 || strcmp(bare, "list") == 0 ||
+            strcmp(bare, "generate") == 0 || strcmp(bare, "compute") == 0 ||
+            strcmp(bare, "notify") == 0 || strcmp(bare, "dispatch") == 0 ||
+            strcmp(bare, "resolve") == 0 || strcmp(bare, "match") == 0 ||
+            strcmp(bare, "test") == 0 || strcmp(bare, "first") == 0 ||
+            strcmp(bare, "all") == 0 || strcmp(bare, "make") == 0);
+}
+
 /* Blocker #1: Laravel/PHP framework helper functions.
  * Skip resolution — never create CALLS edges from helpers to business symbols.
- * Duplicated from pass_parallel.c — keep in sync. */
+ * Duplicated in pass_parallel.c — keep in sync. */
 static bool is_framework_helper(const char *name) {
     if (!name) return false;
     return (strcmp(name, "now") == 0 || strcmp(name, "request") == 0 ||
@@ -402,6 +442,56 @@ static int resolve_single_call(cbm_pipeline_ctx_t *ctx, CBMCall *call,
             emit_classified_edge(ctx, call, source_node, target_node, &res, module_qn, imp_keys,
                                  imp_vals, imp_count);
             return SKIP_ONE;
+        }
+    }
+
+    /* Container-call method chain: app(X::class)->method(), resolve(X)->method().
+     * receiver_expr is the container call expression (e.g. "app(PointsService::class)").
+     * Extract the class name, resolve the method on that class. */
+    if (call->receiver_expr && call->callee_name) {
+        const char *rx = call->receiver_expr;
+        const char *open = strchr(rx, '(');
+        if (open && (strncmp(rx, "app(", (size_t)(open - rx + 1)) == 0 ||
+                     strncmp(rx, "resolve(", (size_t)(open - rx + 1)) == 0 ||
+                     strncmp(rx, "make(", (size_t)(open - rx + 1)) == 0)) {
+            const char *arg = open + 1;
+            while (*arg == ' ') arg++;
+            const char *arg_end = strchr(arg, ')');
+            if (arg_end && arg_end > arg) {
+                size_t alen = (size_t)(arg_end - arg);
+                const char *cc = "::class";
+                if (alen > 7 && strncmp(arg_end - 7, cc, 7) == 0) alen -= 7;
+                if (alen >= 2 && arg[0] == '\'' && arg[alen - 1] == '\'') {
+                    arg++; alen -= 2;
+                } else if (alen >= 2 && arg[0] == '"' && arg[alen - 1] == '"') {
+                    arg++; alen -= 2;
+                }
+                if (alen > 0 && alen < CBM_SZ_256) {
+                    char class_qn[CBM_SZ_256];
+                    memcpy(class_qn, arg, alen);
+                    class_qn[alen] = '\0';
+                    for (char *p = class_qn; *p; p++) {
+                        if (*p == '\\') *p = '.';
+                    }
+                    const char *mn = call->callee_name;
+                    const char *ld = strrchr(mn, '.'); if (ld) mn = ld + 1;
+                    const char *la = strrchr(mn, '>'); if (la) mn = la + 1;
+                    char method_qn[CBM_SZ_512];
+                    snprintf(method_qn, sizeof(method_qn), "%s.%s", class_qn, mn);
+                    const cbm_gbuf_node_t *mtgt =
+                        cbm_gbuf_find_by_qn(ctx->gbuf, method_qn);
+                    if (mtgt && source_node->id != mtgt->id) {
+                        cbm_resolution_t chain_res = {0};
+                        chain_res.qualified_name = mtgt->qualified_name;
+                        chain_res.confidence = 0.82;
+                        chain_res.strategy = "container_method_chain";
+                        chain_res.candidate_count = 1;
+                        emit_classified_edge(ctx, call, source_node, mtgt, &chain_res,
+                                             module_qn, imp_keys, imp_vals, imp_count);
+                        return SKIP_ONE;
+                    }
+                }
+            }
         }
     }
 
@@ -505,11 +595,30 @@ static int resolve_single_call(cbm_pipeline_ctx_t *ctx, CBMCall *call,
                 }
             }
         }
-        /* Member call ($this->x(), $obj->y()) with receiver — the receiver was
-         * stripped from callee_name at extraction time, so the registry only sees
-         * a bare method name. Name-only matching cannot safely resolve member
-         * calls: $this->create() matched FreeGameController.create → fan_in 2868.
-         * Block the registry fallback. False negative > false positive. */
+        /* Member call ($this->x(), $obj->y()) — try registry as last resort
+         * if the method name is specific enough. Block common names (create, find,
+         * get, handle...) that cause false positives via unique_name. */
+        if (!is_common_method_name(call->callee_name)) {
+            /* Strip receiver prefix: "$this.points.debit" → "debit" */
+            const char *bare = call->callee_name;
+            const char *dot = strrchr(bare, '.');
+            const char *arrow = strrchr(bare, '>');
+            if (dot && dot > bare) bare = dot + 1;
+            if (arrow && arrow > bare) bare = arrow + 1;
+            cbm_resolution_t res = cbm_registry_resolve(ctx->registry, bare,
+                                                        module_qn, imp_keys, imp_vals, imp_count);
+            if (res.qualified_name && res.qualified_name[0] &&
+                res.confidence >= 0.55) {
+                res.strategy = "member_registry_fallback";
+                res.confidence *= 0.85;
+                const cbm_gbuf_node_t *tgt = cbm_gbuf_find_by_qn(ctx->gbuf, res.qualified_name);
+                if (tgt && source_node->id != tgt->id) {
+                    emit_classified_edge(ctx, call, source_node, tgt, &res, module_qn,
+                                         imp_keys, imp_vals, imp_count);
+                    return SKIP_ONE;
+                }
+            }
+        }
         return 0;
     }
 

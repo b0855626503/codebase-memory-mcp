@@ -852,6 +852,10 @@ static int run_parallel_pipeline(cbm_pipeline_t *p, cbm_pipeline_ctx_t *ctx,
     cbm_clock_gettime(CLOCK_MONOTONIC, t);
     cbm_pipeline_pass_k8s(ctx, files, file_count);
     cbm_log_info("pass.timing", "pass", "k8s", "elapsed_ms", itoa_buf((int)elapsed_ms(*t)));
+    cbm_clock_gettime(CLOCK_MONOTONIC, t);
+    cbm_pipeline_pass_model_ownership(ctx, files, file_count);
+    cbm_log_info("pass.timing", "pass", "model_ownership", "elapsed_ms",
+                 itoa_buf((int)elapsed_ms(*t)));
     return check_cancel(p) ? CBM_NOT_FOUND : 0;
 }
 
