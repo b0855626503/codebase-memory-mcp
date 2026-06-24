@@ -1305,6 +1305,13 @@ static void emit_normal_calls_edge(cbm_gbuf_t *gbuf, const cbm_gbuf_node_t *sour
         return;
     }
 
+    /* callee_suffix→Class = self-loop noise (GameCurl→GameCurl) */
+    if (res->strategy && strcmp(res->strategy, "callee_suffix") == 0 &&\
+        target->label && strcmp(target->label, "Class") == 0) {\
+        return;\
+    }
+
+
     /* field_type_heuristic_inherited (1,360 edges, ~20% precision):
      * generic method names cross-file are the main noise source.
      * callee_name may be "$this->memberRepository.find" — extract bare name. */

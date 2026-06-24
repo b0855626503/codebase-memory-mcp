@@ -316,6 +316,13 @@ static void emit_classified_edge(cbm_pipeline_ctx_t *ctx, const CBMCall *call,
      * (0.75 * IMPORT_PENALTY 0.67). Filter only truly garbage edges.
      * High-quality strategies all score ≥ 0.60. */
     if (res->confidence < 0.40) {
+
+    /* callee_suffix→Class = self-loop noise */
+    if (res->strategy && strcmp(res->strategy, "callee_suffix") == 0 &&\
+        target->label && strcmp(target->label, "Class") == 0) {\
+        return;\
+    }
+
         return;
     }
 
