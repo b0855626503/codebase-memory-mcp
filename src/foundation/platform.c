@@ -414,6 +414,6 @@ const char *cbm_resolve_cache_dir(void) {
     if (!home) {
         return NULL;
     }
-    snprintf(buf, sizeof(buf), "%s/.cache/codebase-memory-mcp-local", home);
+    snprintf(buf, sizeof(buf), "%s/.cache/codebase-memory-mcp", home);
     return buf;
 }
