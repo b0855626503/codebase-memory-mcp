@@ -585,6 +585,18 @@ cbm-with-ui: embed $(OBJS_VENDORED_PROD)
 clean-c:
 	rm -rf $(BUILD_DIR)
 
+# ── LSP compile_commands.json (for clangd) ──────────────────────────
+
+# Generate per-file compile_commands.json. The prod build compiles all sources
+# in one command (unity-build), so bear can't produce per-file entries.
+# This target runs bear for vendored objects, then generates per-file entries
+# for src/ and internal/cbm/ sources via scripts/gen-compile-commands.py.
+#
+# Requires: bear, python3
+# Run after adding new .c files to src/ or internal/cbm/.
+compile-commands:
+	python3 scripts/gen-compile-commands.py
+
 # ── Linting ─────────────────────────────────────────────────────
 
 # clang-tidy and clang-format: use Homebrew LLVM on macOS, overridable via make args

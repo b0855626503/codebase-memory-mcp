@@ -1,0 +1,29 @@
+# .clangd — clangd LSP configuration for codebase-memory-mcp
+# https://clangd.llvm.org/config
+
+CompileFlags:
+  CompilationDatabase: .
+
+Diagnostics:
+  # Suppress diagnostics for vendored/third-party code
+  Suppress:
+    - "vendored/.*"
+    - "internal/cbm/vendored/.*"
+    - "internal/cbm/grammar/.*"
+  # Unused-includes for vendored code is noise
+  UnusedIncludes: Strict
+  MissingIncludes: Strict
+
+Index:
+  # Don't index vendored code for background indexing
+  Background: Skip
+
+---
+# Per-file overrides
+If:
+  PathMatch: vendored/.*
+  PathExclude: internal/cbm/lsp/lsp_all\.c
+CompileFlags:
+  Remove: [-Werror]
+Diagnostics:
+  Suppress: '*'
