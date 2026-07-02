@@ -997,6 +997,12 @@ bool cbm_is_module_level(TSNode node, CBMLanguage lang) {
 static size_t strip_ext_len(const char *s, size_t len) {
     for (size_t i = len; i > 0; i--) {
         if (s[i - SKIP_ONE] == '.') {
+            /* Dotfiles (.gitattributes, .gitignore): the leading '.' is part of
+             * the filename, not an extension delimiter. Only strip when there is
+             * a non-dot character before the '.' (or it's after a '/'). */
+            if (i == SKIP_ONE || s[i - 2] == '/') {
+                break; /* dotfile — don't strip */
+            }
             return i - SKIP_ONE;
         }
         if (s[i - SKIP_ONE] == '/') {
