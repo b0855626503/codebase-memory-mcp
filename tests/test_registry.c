@@ -158,6 +158,84 @@ TEST(fqn_regular_module_unchanged) {
     PASS();
 }
 
+/* ── Dotfile FQN regression tests ────────────────────────────────── */
+/* Bug: strip_file_extension() treated leading '.' in dotfiles
+ * (.gitattributes, .gitignore, .editorconfig) as an extension separator.
+ * That collapsed the filename to "" → FQN became bare project name →
+ * collided with the Project node QN → Project node silently lost. */
+
+TEST(fqn_dotfile_root_gitattributes_no_strip) {
+    /* .gitattributes in repo root: leading '.' is filename, NOT extension */
+    char *qn = cbm_pipeline_fqn_module("proj", ".gitattributes");
+    ASSERT_NOT_NULL(qn);
+    ASSERT_STR_EQ(qn, "proj..gitattributes");
+    free(qn);
+    PASS();
+}
+
+TEST(fqn_dotfile_root_gitignore_no_strip) {
+    char *qn = cbm_pipeline_fqn_module("proj", ".gitignore");
+    ASSERT_NOT_NULL(qn);
+    ASSERT_STR_EQ(qn, "proj..gitignore");
+    free(qn);
+    PASS();
+}
+
+TEST(fqn_dotfile_root_editorconfig_no_strip) {
+    char *qn = cbm_pipeline_fqn_module("proj", ".editorconfig");
+    ASSERT_NOT_NULL(qn);
+    ASSERT_STR_EQ(qn, "proj..editorconfig");
+    free(qn);
+    PASS();
+}
+
+TEST(fqn_dotfile_root_without_strip_no_project_collision) {
+    /* QN must NOT equal bare project name — the Project node owns that QN */
+    char *qn = cbm_pipeline_fqn_module("proj", ".gitattributes");
+    ASSERT_NOT_NULL(qn);
+    ASSERT_STR_NEQ(qn, "proj");
+    free(qn);
+
+    /* Same for .gitignore */
+    qn = cbm_pipeline_fqn_module("proj", ".gitignore");
+    ASSERT_NOT_NULL(qn);
+    ASSERT_STR_NEQ(qn, "proj");
+    free(qn);
+    PASS();
+}
+
+TEST(fqn_regular_extension_still_stripped) {
+    /* Non-dotfile extensions should still be stripped as before */
+    char *qn = cbm_pipeline_fqn_module("proj", "composer.json");
+    ASSERT_NOT_NULL(qn);
+    ASSERT_STR_EQ(qn, "proj.composer");
+    free(qn);
+
+    qn = cbm_pipeline_fqn_module("proj", "README.md");
+    ASSERT_NOT_NULL(qn);
+    ASSERT_STR_EQ(qn, "proj.README");
+    free(qn);
+    PASS();
+}
+
+TEST(fqn_dotfile_in_subdir_no_strip) {
+    /* Dotfile in subdirectory — leading dot still not an extension */
+    char *qn = cbm_pipeline_fqn_module("proj", "src/.env");
+    ASSERT_NOT_NULL(qn);
+    ASSERT_STR_EQ(qn, "proj.src..env");
+    free(qn);
+    PASS();
+}
+
+TEST(fqn_double_extension_still_strips_last) {
+    /* foo.tar.gz → foo.tar (existing behavior, unchanged) */
+    char *qn = cbm_pipeline_fqn_module("proj", "archive.tar.gz");
+    ASSERT_NOT_NULL(qn);
+    ASSERT_STR_EQ(qn, "proj.archive.tar");
+    free(qn);
+    PASS();
+}
+
 TEST(project_name_from_path) {
     char *name = cbm_project_name_from_path("/Users/dev/project");
     ASSERT_NOT_NULL(name);
@@ -645,6 +723,14 @@ SUITE(registry) {
     RUN_TEST(fqn_index_symbols_get_clean_qn);
     RUN_TEST(fqn_init_file_node_distinct);
     RUN_TEST(fqn_regular_module_unchanged);
+    /* Dotfile FQN regression */
+    RUN_TEST(fqn_dotfile_root_gitattributes_no_strip);
+    RUN_TEST(fqn_dotfile_root_gitignore_no_strip);
+    RUN_TEST(fqn_dotfile_root_editorconfig_no_strip);
+    RUN_TEST(fqn_dotfile_root_without_strip_no_project_collision);
+    RUN_TEST(fqn_regular_extension_still_stripped);
+    RUN_TEST(fqn_dotfile_in_subdir_no_strip);
+    RUN_TEST(fqn_double_extension_still_strips_last);
     RUN_TEST(project_name_from_path);
     RUN_TEST(project_name_from_root);
     /* Registry lifecycle */

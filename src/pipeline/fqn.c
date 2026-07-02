@@ -49,12 +49,17 @@ static char *join_segments(const char **segments, int count) {
     return result;
 }
 
-/* Strip file extension from the last path component. */
+/* Strip file extension from the last path component.
+ * Dotfiles (.gitattributes, .gitignore, .editorconfig) are left intact:
+ * the leading '.' is part of the filename, not an extension delimiter. */
 static void strip_file_extension(char *path) {
     char *last_slash = strrchr(path, '/');
     char *start = last_slash ? last_slash + SKIP_ONE : path;
     char *ext = strrchr(start, '.');
-    if (ext) {
+    /* ext == start means the dot IS the first character (dotfile):
+     * ".gitattributes" → don't strip, there's no extension here.
+     * "." and ".." are also preserved (they're directory entries, not files). */
+    if (ext && ext != start) {
         *ext = '\0';
     }
 }
