@@ -43,22 +43,20 @@ call_mcp() {
     "$BINARY" cli "$tool" "$args" 2>/dev/null || echo '{"error":"call failed"}'
 }
 
-# ── Helper: extract value from MCP response ─────────────────────────
+# ── Helper: extract value from CLI response ─────────────────────────
+# CLI returns raw JSON (no MCP content envelope), format:
+#   {"columns":["cnt"],"rows":[["123"]],"total":1}
 
 extract_field() {
     python3 -c "
 import json,sys
 try:
     d=json.load(sys.stdin)
-    if 'content' in d:
-        inner=json.loads(d['content'][0]['text'])
+    # CLI query_graph returns {\"columns\":[...],\"rows\":[[...]],\"total\":N}
+    if 'rows' in d and len(d['rows'])>0 and len(d['rows'][0])>0:
+        print(d['rows'][0][0])
     else:
-        inner=d
-    keys='$1'.split('.')
-    val=inner
-    for k in keys:
-        val=val.get(k,0) if isinstance(val,dict) else val
-    print(val if val is not None else 0)
+        print(0)
 except: print(0)
 "
 }
@@ -66,17 +64,22 @@ except: print(0)
 # ── Query edge count by type ────────────────────────────────────────
 
 query_edge_count() {
-    local edge_type="$1"
-    call_mcp query_graph "{\"query\":\"MATCH ()-[e:$edge_type]->() RETURN count(e) AS cnt\"}" \
-        | extract_field "results.0.cnt"
+    local project="$1" edge_type="$2"
+    call_mcp query_graph "{\"project\":\"$project\",\"query\":\"MATCH ()-[e:$edge_type]->() RETURN count(e) AS cnt\"}" \
+        | extract_field
 }
 
 # ── Query node count by label ───────────────────────────────────────
 
 query_node_count() {
-    local label="$1"
-    call_mcp query_graph "{\"query\":\"MATCH (n:$label) RETURN count(n) AS cnt\"}" \
-        | extract_field "results.0.cnt"
+    local project="$1" label="$2"
+    if [ -z "$label" ]; then
+        call_mcp query_graph "{\"project\":\"$project\",\"query\":\"MATCH (n) RETURN count(n) AS cnt\"}" \
+            | extract_field
+    else
+        call_mcp query_graph "{\"project\":\"$project\",\"query\":\"MATCH (n:$label) RETURN count(n) AS cnt\"}" \
+            | extract_field
+    fi
 }
 
 # ── Collect all metrics ─────────────────────────────────────────────
@@ -87,46 +90,55 @@ collect_metrics() {
     echo "  Collecting graph metrics..." >&2
 
     # Edge types
-    local calls=$(query_edge_count "CALLS")
-    local routes_to=$(query_edge_count "ROUTES_TO")
-    local uses_model=$(query_edge_count "USES_MODEL")
-    local owns_model=$(query_edge_count "OWNS_MODEL")
-    local imports=$(query_edge_count "IMPORTS")
-    local defines=$(query_edge_count "DEFINES")
-    local extends=$(query_edge_count "EXTENDS")
-    local implements=$(query_edge_count "IMPLEMENTS")
-    local http_calls=$(query_edge_count "HTTP_CALLS")
-    local uses_service=$(query_edge_count "USES_SERVICE")
-    local similar_to=$(query_edge_count "SIMILAR_TO")
-    local semantically_related=$(query_edge_count "SEMANTICALLY_RELATED")
+    local calls=$(query_edge_count "$project" "CALLS")
+    local routes_to=$(query_edge_count "$project" "ROUTES_TO")
+    local uses_model=$(query_edge_count "$project" "USES_MODEL")
+    local owns_model=$(query_edge_count "$project" "OWNS_MODEL")
+    local imports=$(query_edge_count "$project" "IMPORTS")
+    local defines=$(query_edge_count "$project" "DEFINES")
+    local extends=$(query_edge_count "$project" "EXTENDS")
+    local implements=$(query_edge_count "$project" "IMPLEMENTS")
+    local http_calls=$(query_edge_count "$project" "HTTP_CALLS")
+    local uses_service=$(query_edge_count "$project" "USES_SERVICE")
+    local similar_to=$(query_edge_count "$project" "SIMILAR_TO")
+    local semantically_related=$(query_edge_count "$project" "SEMANTICALLY_RELATED")
 
     # Node labels
-    local functions=$(query_node_count "Function")
-    local methods=$(query_node_count "Method")
-    local classes=$(query_node_count "Class")
-    local routes=$(query_node_count "Route")
-    local models=$(query_node_count "Model")
-    local controllers=$(query_node_count "Controller")
-    local files=$(query_node_count "File")
+    local functions=$(query_node_count "$project" "Function")
+    local methods=$(query_node_count "$project" "Method")
+    local classes=$(query_node_count "$project" "Class")
+    local routes=$(query_node_count "$project" "Route")
+    local models=$(query_node_count "$project" "Model")
+    local controllers=$(query_node_count "$project" "Controller")
+    local files=$(query_node_count "$project" "File")
 
     # Total
-    local total_nodes=$(query_node_count "")
-    local total_edges=$(query_edge_count "")
+    local total_nodes=$(query_node_count "$project" "")
+    local total_edges=$(query_edge_count "$project" "")
 
     # ── trace_path smoke tests ──────────────────────────────────────
     echo "  Running trace_path smoke tests..." >&2
 
     # Find a function to trace
     local trace_fn=$(call_mcp query_graph \
-        '{"query":"MATCH (n:Function) WHERE n.name CONTAINS \"handle\" OR n.name CONTAINS \"process\" RETURN n.name AS name, n.qualified_name AS qn LIMIT 3"}' \
-        | extract_field "results.0.qn")
+        "{\"project\":\"$project\",\"query\":\"MATCH (n:Function) WHERE n.name CONTAINS 'handle' OR n.name CONTAINS 'process' RETURN n.qualified_name AS qn LIMIT 3\"}" \
+        | python3 -c "
+import json,sys
+try:
+    d=json.load(sys.stdin)
+    if 'rows' in d and len(d['rows'])>0:
+        print(d['rows'][0][0])
+    else:
+        print('')
+except: print('')
+" 2>/dev/null)
 
     local trace_depth=0
     if [ -n "$trace_fn" ] && [ "$trace_fn" != "0" ]; then
         # Escape the QN for JSON
         local escaped_qn=$(python3 -c "import json; print(json.dumps('$trace_fn'))")
         trace_depth=$(call_mcp trace_path \
-            "{\"function_name\":$escaped_qn,\"mode\":\"calls\",\"max_depth\":3}" \
+            "{\"project\":\"$project\",\"function_name\":$escaped_qn,\"mode\":\"calls\",\"max_depth\":3}" \
             | python3 -c "
 import json,sys
 try:
@@ -154,7 +166,7 @@ except: print(0)
     echo "  Collecting architecture..." >&2
 
     local arch_layers=$(call_mcp get_architecture \
-        '{"aspects":["layers"]}' \
+        "{\"project\":\"$project\",\"aspects\":[\"layers\"]}" \
         | python3 -c "
 import json,sys
 try:
@@ -169,7 +181,7 @@ except: print(0)
 " 2>/dev/null || echo "0")
 
     local arch_pkgs=$(call_mcp get_architecture \
-        '{"aspects":["packages"]}' \
+        "{\"project\":\"$project\",\"aspects\":[\"packages\"]}" \
         | python3 -c "
 import json,sys
 try:
