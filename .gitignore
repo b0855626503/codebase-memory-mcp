@@ -65,3 +65,6 @@ compile_commands.json
 
 # Serena MCP local memory cache
 .serena/memories/
+
+# Regression benchmark baselines (generated)
+.benchmark-baselines/
