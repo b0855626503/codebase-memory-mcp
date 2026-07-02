@@ -6,6 +6,7 @@
 #include "../src/foundation/compat.h"
 #include "../src/foundation/compat_fs.h" /* cbm_unlink / cbm_rmdir */
 #include "test_framework.h"
+#include <cli/cli.h>
 #include <mcp/mcp.h>
 #include <store/store.h>
 #include <yyjson/yyjson.h>
@@ -136,10 +137,13 @@ TEST(jsonrpc_format_error) {
  * ══════════════════════════════════════════════════════════════════ */
 
 TEST(mcp_initialize_response) {
+    cbm_cli_set_version("9.8.7-test");
+
     /* Default (no params): returns latest supported version */
     char *json = cbm_mcp_initialize_response(NULL);
     ASSERT_NOT_NULL(json);
     ASSERT_NOT_NULL(strstr(json, "codebase-memory-mcp"));
+    ASSERT_NOT_NULL(strstr(json, "\"version\":\"9.8.7-test\""));
     ASSERT_NOT_NULL(strstr(json, "capabilities"));
     ASSERT_NOT_NULL(strstr(json, "tools"));
     ASSERT_NOT_NULL(strstr(json, "2025-11-25"));
@@ -161,6 +165,7 @@ TEST(mcp_initialize_response) {
     ASSERT_NOT_NULL(json);
     ASSERT_NOT_NULL(strstr(json, "2025-11-25"));
     free(json);
+    cbm_cli_set_version("dev");
     PASS();
 }
 
