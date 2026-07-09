@@ -877,10 +877,11 @@ static int try_incremental_or_delete_db(cbm_pipeline_t *p, cbm_file_info_t *file
         int hash_count = 0;
         cbm_store_get_file_hashes(check_store, p->project_name, &hashes, &hash_count);
         cbm_store_free_file_hashes(hashes, hash_count);
-        cbm_store_close(check_store);
         if (hash_count > 0 && file_count <= hash_count + (hash_count / PAIR_LEN)) {
             cbm_log_info("pipeline.route", "path", "incremental", "stored_hashes",
                          itoa_buf(hash_count));
+            /* Close store before early return — we're on the incremental path */
+            cbm_store_close(check_store);
             int rc = cbm_pipeline_run_incremental(p, db_path, files, file_count);
             free(db_path);
             return rc;
@@ -891,6 +892,7 @@ static int try_incremental_or_delete_db(cbm_pipeline_t *p, cbm_file_info_t *file
         }
     } else if (check_store) {
         cbm_store_close(check_store);
+        check_store = NULL; /* integrity check failed — null out */
     }
     /* ── Preserve incidents across reindex ──────────────────────── */
     if (check_store) {
@@ -910,6 +912,7 @@ static int try_incremental_or_delete_db(cbm_pipeline_t *p, cbm_file_info_t *file
             }
             cbm_store_adr_free(&existing);
         }
+        cbm_store_close(check_store);
     }
 
     cbm_log_info("pipeline.route", "path", "reindex", "action", "deleting old db");
