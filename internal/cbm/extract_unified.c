@@ -9,6 +9,7 @@
 enum { MAX_INFRA_BINDINGS = 8 };
 
 #include <stdint.h> // uint32_t, uint8_t
+#include <stdio.h>  // FILE, fopen, fprintf, fclose
 #include <string.h>
 
 // --- Scope stack management ---
@@ -87,7 +88,10 @@ static const char *compute_wolfram_func_qn(CBMExtractCtx *ctx, TSNode node) {
     return NULL;
 }
 
-// Resolve the name node for a function, handling arrow functions.
+// Resolve the name node for a function.
+// Handles grammars that use a direct `name` field (JS/Python/Go/Rust/Java/PHP), as
+// well as C/C++ `function_definition` nodes where the name is buried inside the
+// declarator chain (declarator → function_declarator → declarator → identifier).
 static TSNode resolve_func_name_node(TSNode node) {
     TSNode name_node = ts_node_child_by_field_name(node, TS_FIELD("name"));
     if (ts_node_is_null(name_node) && strcmp(ts_node_type(node), "arrow_function") == 0) {
@@ -100,6 +104,26 @@ static TSNode resolve_func_name_node(TSNode node) {
      * function name is a simple_identifier child of function_declaration. */
     if (ts_node_is_null(name_node) && strcmp(ts_node_type(node), "function_declaration") == 0) {
         name_node = cbm_find_child_by_kind(node, "simple_identifier");
+    }
+    /* C/C++ tree-sitter grammars: function_definition has no `name` field.
+     * The name is inside the declarator chain:
+     *   function_definition → declarator → function_declarator → declarator → identifier
+     * Walk the chain until we find the terminal identifier. */
+    if (ts_node_is_null(name_node)) {
+        const char *ntype = ts_node_type(node);
+        if (strcmp(ntype, "function_definition") == 0) {
+            TSNode decl = ts_node_child_by_field_name(node, TS_FIELD("declarator"));
+            /* Descend through nested declarators (pointer, array, function) */
+            for (int d = 0; d < 8 && !ts_node_is_null(decl); d++) {
+                const char *dtype = ts_node_type(decl);
+                if (strcmp(dtype, "identifier") == 0 ||
+                    strcmp(dtype, "field_identifier") == 0) {
+                    name_node = decl;
+                    break;
+                }
+                decl = ts_node_child_by_field_name(decl, TS_FIELD("declarator"));
+            }
+        }
     }
     return name_node;
 }
@@ -882,4 +906,24 @@ void cbm_extract_unified(CBMExtractCtx *ctx) {
     }
 
     ts_tree_cursor_delete(&cursor);
+
+    /* Diagnostic: count calls with vs without enclosing_func_qn.
+     * Phase 1B — per-language extraction coverage measurement. */
+    int total = ctx->result->calls.count;
+    int with_enc = 0;
+    for (int i = 0; i < total; i++) {
+        if (ctx->result->calls.items[i].enclosing_func_qn &&
+            ctx->result->calls.items[i].enclosing_func_qn[0]) {
+            with_enc++;
+        }
+    }
+    if (total > 0) {
+        FILE *df = fopen("/tmp/cbm_extract_calls_diag.log", "a");
+        if (df) {
+            fprintf(df, "lang=%d\tfile=%s\ttotal=%d\twith_enc=%d\tpct=%d\n",
+                    (int)ctx->language, ctx->rel_path, total, with_enc,
+                    (with_enc * 100) / total);
+            fclose(df);
+        }
+    }
 }
