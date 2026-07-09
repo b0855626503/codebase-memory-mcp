@@ -1146,6 +1146,26 @@ static char *verify_project_indexed(cbm_store_t *store, const char *project) {
     return NULL;
 }
 
+/* Check if project has an ADR: store first, then legacy file fallback.
+ * Differentiates CBM_STORE_ERR ("store broken" → warn + false) from
+ * CBM_STORE_NOT_FOUND (→ fallback to <root>/.codebase-memory/adr.md, #256).
+ * root_path may be NULL to skip the legacy fallback. */
+static bool mcp_project_has_adr(cbm_store_t *store, const char *project,
+                                const char *root_path) {
+    int rc = cbm_store_adr_has(store, project);
+    if (rc == CBM_STORE_OK) return true;
+    if (rc == CBM_STORE_ERR) {
+        cbm_log_warn("adr.store_err", "project", project);
+        return false;
+    }
+    /* CBM_STORE_NOT_FOUND — try legacy file for unmigrated projects */
+    if (!root_path) return false;
+    char adr_path[CBM_SZ_4K];
+    snprintf(adr_path, sizeof(adr_path), "%s/.codebase-memory/adr.md", root_path);
+    struct stat adr_st;
+    return (stat(adr_path, &adr_st) == 0);
+}
+
 static char *handle_get_graph_schema(cbm_mcp_server_t *srv, const char *args) {
     char *project = cbm_mcp_get_string_arg(args, "project");
     cbm_store_t *store = resolve_store(srv, project);
@@ -1192,21 +1212,19 @@ static char *handle_get_graph_schema(cbm_mcp_server_t *srv, const char *args) {
     }
     yyjson_mut_obj_add_val(doc, root, "edge_types", types);
 
-    /* Check ADR presence */
+    /* Check ADR presence: store first, then legacy file fallback */
+    bool adr_exists = false;
     cbm_project_t proj_info = {0};
-    if (cbm_store_get_project(store, project, &proj_info) == 0 && proj_info.root_path) {
-        char adr_path[CBM_SZ_4K];
-        snprintf(adr_path, sizeof(adr_path), "%s/.codebase-memory/adr.md", proj_info.root_path);
-        struct stat adr_st;
-        bool adr_exists = (stat(adr_path, &adr_st) == 0);
-        yyjson_mut_obj_add_bool(doc, root, "adr_present", adr_exists);
-        if (!adr_exists) {
-            yyjson_mut_obj_add_str(
-                doc, root, "adr_hint",
-                "No ADR found. Use manage_adr(mode='update') to persist architectural "
-                "decisions across sessions. Run get_architecture(aspects=['all']) first.");
-        }
+    if (cbm_store_get_project(store, project, &proj_info) == 0) {
+        adr_exists = mcp_project_has_adr(store, project, proj_info.root_path);
         cbm_project_free_fields(&proj_info);
+    }
+    yyjson_mut_obj_add_bool(doc, root, "adr_present", adr_exists);
+    if (!adr_exists) {
+        yyjson_mut_obj_add_str(
+            doc, root, "adr_hint",
+            "No ADR found. Use manage_adr(mode='update') to persist architectural "
+            "decisions across sessions. Run get_architecture(aspects=['all']) first.");
     }
 
     char *json = yy_doc_to_str(doc);
@@ -1307,6 +1325,10 @@ static sqlite3_destructor_type mcp_sqlite_transient(void) {
 }
 #define MCP_SQLITE_TRANSIENT (mcp_sqlite_transient())
 
+/* Build an FTS5 match string from a whitespace-delimited query.
+ * Tokens are any non-whitespace run — Unicode-aware (Thai, CJK, emoji all work).
+ * Tokens containing FTS5 special characters are wrapped in double-quotes.
+ * Returns the number of tokens, 0 if the query produced nothing usable. */
 static int bm25_build_match(const char *query, char *out, size_t out_size) {
     if (!query || !out || out_size < BM25_MIN_BUF) {
         return 0;
@@ -1315,31 +1337,48 @@ static int bm25_build_match(const char *query, char *out, size_t out_size) {
     int tokens = 0;
     const char *p = query;
     while (*p) {
-        while (*p && !((*p >= 'a' && *p <= 'z') || (*p >= 'A' && *p <= 'Z') ||
-                       (*p >= '0' && *p <= '9') || *p == '_')) {
+        /* Skip whitespace (ASCII space/tab/newline + non-ASCII Unicode space U+00A0) */
+        while (*p && (*p == ' ' || *p == '\t' || *p == '\n' || *p == '\r')) {
             p++;
         }
-        if (!*p) {
-            break;
-        }
+        if (!*p) break;
+
         const char *tok_start = p;
-        while (*p && ((*p >= 'a' && *p <= 'z') || (*p >= 'A' && *p <= 'Z') ||
-                      (*p >= '0' && *p <= '9') || *p == '_')) {
+        /* Eat until whitespace — this captures ANY non-whitespace run
+         * including Thai, CJK, emoji, and symbols. */
+        while (*p && *p != ' ' && *p != '\t' && *p != '\n' && *p != '\r') {
             p++;
         }
         size_t tok_len = (size_t)(p - tok_start);
-        if (tok_len == 0) {
-            continue;
+        if (tok_len == 0) continue;
+
+        /* Check if token needs quoting (contains FTS5 operators or special chars) */
+        bool need_quote = false;
+        for (size_t i = 0; i < tok_len; i++) {
+            char c = tok_start[i];
+            if (c == '*' || c == '"' || c == '(' || c == ')' ||
+                c == '^' || c == '+' || c == '-' || c == ':' ||
+                c == '~' || c == '[' || c == ']' || c == '{' || c == '}') {
+                need_quote = true;
+                break;
+            }
         }
+
         const char *sep = (tokens > 0) ? " OR " : "";
         size_t sep_len = strlen(sep);
-        if (pos + sep_len + tok_len + BM25_SEP_RESERVE >= out_size) {
-            break; /* out of room — stop cleanly, keep what we have */
-        }
+        size_t need = pos + sep_len + tok_len + (need_quote ? 2 : 0) + BM25_SEP_RESERVE;
+        if (need >= out_size) break;
+
         memcpy(out + pos, sep, sep_len);
         pos += sep_len;
+        if (need_quote) {
+            out[pos++] = '"';
+        }
         memcpy(out + pos, tok_start, tok_len);
         pos += tok_len;
+        if (need_quote) {
+            out[pos++] = '"';
+        }
         tokens++;
     }
     out[pos] = '\0';
@@ -1458,7 +1497,15 @@ static char *bm25_search(cbm_store_t *store, const char *project, const char *qu
     sqlite3_finalize(stmt);
 
     yyjson_mut_obj_add_val(doc, root, "results", results);
-    yyjson_mut_obj_add_bool(doc, root, "has_more", total > offset + emitted);
+    bool more = total > offset + emitted;
+    yyjson_mut_obj_add_bool(doc, root, "has_more", more);
+    /* total is capped at BM25_INNER_LIMIT — surface the cap so callers know
+     * when their query is too broad and needs narrowing. */
+    if (total >= BM25_INNER_LIMIT) {
+        yyjson_mut_obj_add_bool(doc, root, "count_capped", true);
+        yyjson_mut_obj_add_str(doc, root, "narrow_hint",
+                               "total capped at 2000 — narrow your query for complete results");
+    }
 
     char *json = yy_doc_to_str(doc);
     yyjson_mut_doc_free(doc);
@@ -1927,6 +1974,8 @@ static char *handle_index_status(cbm_mcp_server_t *srv, const char *args) {
             yyjson_mut_obj_add_strcpy(doc, root, "root_path",
                                       proj_info.root_path ? proj_info.root_path : "");
             add_git_context_json(doc, root, proj_info.root_path);
+            yyjson_mut_obj_add_bool(doc, root, "adr_present",
+                                    mcp_project_has_adr(store, project, proj_info.root_path));
             safe_str_free(&proj_info.name);
             safe_str_free(&proj_info.indexed_at);
             safe_str_free(&proj_info.root_path);
@@ -2466,6 +2515,38 @@ static char *handle_trace_call_path(cbm_mcp_server_t *srv, const char *args) {
                 cbm_store_free_nodes(cands, nc);
                 nc = 0; cands = NULL; /* prevent double-free in fallthrough */
             } else if (nc > 1) {
+                /* Try auto-resolution: if all candidates share the same file
+                 * (same QN prefix up to the last dot), pick Function > Method > Class.
+                 * This resolves the common case where one function has Module and
+                 * Class entries pointing to the same file. */
+                bool same_file = true;
+                const char *first_qn = cands[0].qualified_name ? cands[0].qualified_name : "";
+                const char *first_dot = strrchr(first_qn, '.');
+                size_t prefix_len = first_dot ? (size_t)(first_dot - first_qn) : strlen(first_qn);
+                for (int i = 1; i < nc; i++) {
+                    const char *qn = cands[i].qualified_name ? cands[i].qualified_name : "";
+                    if (strncmp(first_qn, qn, prefix_len) != 0 ||
+                        (qn[prefix_len] != '\0' && qn[prefix_len] != '.')) {
+                        same_file = false;
+                        break;
+                    }
+                }
+                if (same_file) {
+                    /* Pick best label: Function > Method > Class > Field > first */
+                    int best = 0;
+                    for (int i = 1; i < nc; i++) {
+                        const char *bl = cands[best].label ? cands[best].label : "";
+                        const char *cl = cands[i].label ? cands[i].label : "";
+                        /* Prefer Function/Method over others */
+                        if (strcmp(bl, "Function") != 0 && strcmp(bl, "Method") != 0 &&
+                            (strcmp(cl, "Function") == 0 || strcmp(cl, "Method") == 0)) {
+                            best = i;
+                        }
+                    }
+                    func_name = heap_strdup(cands[best].qualified_name);
+                    cbm_store_free_nodes(cands, nc);
+                    nc = 0; cands = NULL;
+                } else {
                 /* Multiple candidates — return candidate list */
                 yyjson_mut_doc *doc = yyjson_mut_doc_new(NULL);
                 yyjson_mut_val *root = yyjson_mut_obj(doc);
@@ -2491,6 +2572,7 @@ static char *handle_trace_call_path(cbm_mcp_server_t *srv, const char *args) {
                 char *result = cbm_mcp_text_result(json, false);
                 free(json);
                 return result;
+                } /* endif same_file auto-resolution */
             }
             /* nc == 0: fall through to error handling below */
             if (cands) { cbm_store_free_nodes(cands, nc); }
@@ -2830,10 +2912,8 @@ static void build_index_success_response(cbm_mcp_server_t *srv, yyjson_mut_doc *
     yyjson_mut_obj_add_int(doc, root, "nodes", nodes);
     yyjson_mut_obj_add_int(doc, root, "edges", edges);
 
-    char adr_path[CBM_SZ_4K];
-    snprintf(adr_path, sizeof(adr_path), "%s/.codebase-memory/adr.md", repo_path);
-    struct stat adr_st;
-    bool adr_exists = (stat(adr_path, &adr_st) == 0);
+    /* Check ADR presence: store first, then legacy file fallback */
+    bool adr_exists = mcp_project_has_adr(store, project_name, repo_path);
     yyjson_mut_obj_add_bool(doc, root, "adr_present", adr_exists);
     if (!adr_exists) {
         yyjson_mut_obj_add_str(
