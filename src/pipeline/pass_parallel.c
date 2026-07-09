@@ -1782,19 +1782,11 @@ static const cbm_gbuf_node_t *find_source_node(const cbm_gbuf_t *gbuf, const cha
     const cbm_gbuf_node_t *src = NULL;
     if (enclosing_qn) {
         src = cbm_gbuf_find_by_qn(gbuf, enclosing_qn);
-        /* Phase 1B diagnostic: log first few QN lookup failures */
-        static int diag_miss = 0;
-        if (!src && diag_miss < 10) {
-            fprintf(stderr, "DIAG|find_source|MISS|qn=%s|rel=%s\n", enclosing_qn, rel);
-            diag_miss++;
-        }
         /* Validate: source must be Function or Method.
          * Reject File, Module, Class, and any other label. */
         if (src && src->label) {
             if (strcmp(src->label, "Function") != 0 &&
                 strcmp(src->label, "Method") != 0) {
-                fprintf(stderr, "DIAG|find_source|WRONG_LABEL|qn=%s|label=%s\n",
-                        enclosing_qn, src->label);
                 src = NULL;
             }
         }

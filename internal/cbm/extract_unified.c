@@ -9,7 +9,6 @@
 enum { MAX_INFRA_BINDINGS = 8 };
 
 #include <stdint.h> // uint32_t, uint8_t
-#include <stdio.h>  // FILE, fopen, fprintf, fclose
 #include <string.h>
 
 // --- Scope stack management ---
@@ -906,24 +905,4 @@ void cbm_extract_unified(CBMExtractCtx *ctx) {
     }
 
     ts_tree_cursor_delete(&cursor);
-
-    /* Diagnostic: count calls with vs without enclosing_func_qn.
-     * Phase 1B — per-language extraction coverage measurement. */
-    int total = ctx->result->calls.count;
-    int with_enc = 0;
-    for (int i = 0; i < total; i++) {
-        if (ctx->result->calls.items[i].enclosing_func_qn &&
-            ctx->result->calls.items[i].enclosing_func_qn[0]) {
-            with_enc++;
-        }
-    }
-    if (total > 0) {
-        FILE *df = fopen("/tmp/cbm_extract_calls_diag.log", "a");
-        if (df) {
-            fprintf(df, "lang=%d\tfile=%s\ttotal=%d\twith_enc=%d\tpct=%d\n",
-                    (int)ctx->language, ctx->rel_path, total, with_enc,
-                    (with_enc * 100) / total);
-            fclose(df);
-        }
-    }
 }
