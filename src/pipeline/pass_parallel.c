@@ -1277,6 +1277,15 @@ static void emit_config_edge(cbm_gbuf_t *gbuf, const cbm_gbuf_node_t *source,
 static void emit_normal_calls_edge(cbm_gbuf_t *gbuf, const cbm_gbuf_node_t *source,
                                    const cbm_gbuf_node_t *target, const CBMCall *call,
                                    const cbm_resolution_t *res) {
+    /* Belt-and-suspenders: CALLS.source must be Function or Method.
+     * Module→Function edges are structurally incorrect — they poison
+     * trace_path, impact analysis, centrality, and planner. */
+    if (!source || !source->label) return;
+    if (strcmp(source->label, "Function") != 0 &&
+        strcmp(source->label, "Method") != 0) {
+        return;
+    }
+
     /* Minimum confidence threshold for CALLS edges.
      * unique_name without import reachability scores 0.50
      * (0.75 * IMPORT_PENALTY 0.67). Filter only truly garbage edges.
@@ -1397,11 +1406,21 @@ static void emit_normal_calls_edge(cbm_gbuf_t *gbuf, const cbm_gbuf_node_t *sour
 
 /* Classify a resolved call by library identity and emit the appropriate edge. */
 /* Create Route node + CALLS + HANDLES edges for a route registration call. */
+/* Route registration edges: CALLS from registration site to Route node.
+ * Source must be Function or Method — Module-level route files are not
+ * Functions and should use a different edge type. */
 static void emit_route_registration(cbm_gbuf_t *gbuf, const cbm_gbuf_node_t *source,
                                     const CBMCall *call, const char *route_path,
                                     const char *handler_ref, const char *module_qn,
                                     const cbm_registry_t *registry, const cbm_gbuf_t *main_gbuf,
                                     const char **ik, const char **iv, int ic) {
+    /* Source must be Function or Method — reject Module/File/Class nodes */
+    if (!source || !source->label) return;
+    if (strcmp(source->label, "Function") != 0 &&
+        strcmp(source->label, "Method") != 0) {
+        return;
+    }
+
     const char *method = cbm_service_pattern_route_method(call->callee_name);
     char rqn[CBM_ROUTE_QN_SIZE];
     snprintf(rqn, sizeof(rqn), "__route__%s__%s", method ? method : "ANY", route_path);
@@ -1751,17 +1770,36 @@ static void emit_service_edge(cbm_gbuf_t *gbuf, const cbm_gbuf_node_t *source,
 }
 
 /* Find the source node for an edge: enclosing function or file node. */
+/* Resolve the source node for a CALLS / USAGE / WRITES / THROWS edge.
+ * MUST be a Function or Method — File/Module fallback creates structurally
+ * incorrect edges that poison every downstream consumer (trace_path, impact
+ * analysis, centrality, planner).  If the enclosing function is unknown,
+ * return NULL to skip the edge rather than creating a low-quality one. */
 static const cbm_gbuf_node_t *find_source_node(const cbm_gbuf_t *gbuf, const char *project,
                                                const char *rel, const char *enclosing_qn) {
+    (void)project;
+    (void)rel;
     const cbm_gbuf_node_t *src = NULL;
     if (enclosing_qn) {
         src = cbm_gbuf_find_by_qn(gbuf, enclosing_qn);
+        /* Phase 1B diagnostic: log first few QN lookup failures */
+        static int diag_miss = 0;
+        if (!src && diag_miss < 10) {
+            fprintf(stderr, "DIAG|find_source|MISS|qn=%s|rel=%s\n", enclosing_qn, rel);
+            diag_miss++;
+        }
+        /* Validate: source must be Function or Method.
+         * Reject File, Module, Class, and any other label. */
+        if (src && src->label) {
+            if (strcmp(src->label, "Function") != 0 &&
+                strcmp(src->label, "Method") != 0) {
+                fprintf(stderr, "DIAG|find_source|WRONG_LABEL|qn=%s|label=%s\n",
+                        enclosing_qn, src->label);
+                src = NULL;
+            }
+        }
     }
-    if (!src) {
-        char *file_qn = cbm_pipeline_fqn_compute(project, rel, "__file__");
-        src = cbm_gbuf_find_by_qn(gbuf, file_qn);
-        free(file_qn);
-    }
+    /* No fallback to __file__ — File→Function edges are semantically wrong. */
     return src;
 }
 

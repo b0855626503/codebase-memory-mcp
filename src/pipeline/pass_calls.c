@@ -412,18 +412,29 @@ static void emit_classified_edge(cbm_pipeline_ctx_t *ctx, const CBMCall *call,
     cbm_gbuf_insert_edge(ctx->gbuf, source->id, target->id, "CALLS", props);
 }
 
-/* Find source node for a call: enclosing function or file node. */
+/* Find source node for a call: MUST be a Function or Method node.
+ * Never fall back to File/Module nodes — File→Function CALLS edges
+ * degrade every downstream consumer (trace_path, impact analysis,
+ * centrality, planner).  If the enclosing function is unknown, skip
+ * the call rather than creating a structurally-incorrect edge. */
 static const cbm_gbuf_node_t *calls_find_source(cbm_pipeline_ctx_t *ctx, const char *rel,
                                                 const char *enclosing_qn) {
+    (void)rel;
     const cbm_gbuf_node_t *src = NULL;
     if (enclosing_qn) {
         src = cbm_gbuf_find_by_qn(ctx->gbuf, enclosing_qn);
+        /* Validate: source of a CALLS edge must be Function or Method.
+         * Reject File, Module, Class, and any other label — those
+         * produce structurally-incorrect edges. */
+        if (src && src->label) {
+            if (strcmp(src->label, "Function") != 0 &&
+                strcmp(src->label, "Method") != 0) {
+                src = NULL;
+            }
+        }
     }
-    if (!src) {
-        char *fqn = cbm_pipeline_fqn_compute(ctx->project_name, rel, "__file__");
-        src = cbm_gbuf_find_by_qn(ctx->gbuf, fqn);
-        free(fqn);
-    }
+    /* No fallback to __file__ — that would create File→Function edges,
+     * which are semantically wrong and poison all call-graph queries. */
     return src;
 }
 
@@ -909,7 +920,9 @@ static int scan_depends_in_sig(cbm_pipeline_ctx_t *ctx, const cbm_regex_t *re, c
         if (res.qualified_name && res.qualified_name[0] != '\0') {
             const cbm_gbuf_node_t *sn = cbm_gbuf_find_by_qn(ctx->gbuf, def->qualified_name);
             const cbm_gbuf_node_t *tn = cbm_gbuf_find_by_qn(ctx->gbuf, res.qualified_name);
-            if (sn && tn && sn->id != tn->id) {
+            if (sn && tn && sn->id != tn->id &&
+                sn->label && (strcmp(sn->label, "Function") == 0 ||
+                              strcmp(sn->label, "Method") == 0)) {
                 cbm_gbuf_insert_edge(ctx->gbuf, sn->id, tn->id, "CALLS",
                                      "{\"confidence\":0.95,\"strategy\":\"fastapi_depends\"}");
                 count++;

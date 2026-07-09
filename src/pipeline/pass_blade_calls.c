@@ -101,7 +101,11 @@ static int scan_blade_calls(const char *source, cbm_gbuf_t *gbuf,
                     snprintf(props, sizeof(props),
                              "{\"callee\":\"%s\",\"strategy\":\"blade_template\",\"confidence\":0.80}",
                              fname);
-                    cbm_gbuf_insert_edge(gbuf, blade_module->id, target->id, "CALLS", props);
+                    /* Blade templates invoke PHP helpers/functions. The source is a
+                     * Module (template file), not a Function — use BLADE_CALLS
+                     * instead of CALLS to preserve the CALLS invariant:
+                     *   CALLS.source ∈ {Function, Method} */
+                    cbm_gbuf_insert_edge(gbuf, blade_module->id, target->id, "BLADE_CALLS", props);
                     created++;
                 }
             }

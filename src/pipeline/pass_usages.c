@@ -183,17 +183,26 @@ static void free_import_map(const char **keys, const char **vals, int count) {
 }
 
 /* Find the graph buffer node for an enclosing function QN, falling back to file node. */
+/* Find enclosing node for USAGE/WRITES/THROWS edges.
+ * MUST resolve to a Function or Method — falling back to File nodes
+ * produces incorrect edges that degrade call-graph quality. */
 static const cbm_gbuf_node_t *find_enclosing_node(cbm_pipeline_ctx_t *ctx, const char *func_qn,
                                                   const char *rel_path) {
+    (void)rel_path;
     const cbm_gbuf_node_t *node = NULL;
     if (func_qn && func_qn[0]) {
         node = cbm_gbuf_find_by_qn(ctx->gbuf, func_qn);
+        /* Validate: enclosing node for USAGE/WRITES/THROWS must be
+         * a Function or Method.  Reject File/Module/Class nodes. */
+        if (node && node->label) {
+            if (strcmp(node->label, "Function") != 0 &&
+                strcmp(node->label, "Method") != 0) {
+                node = NULL;
+            }
+        }
     }
-    if (!node) {
-        char *file_qn = cbm_pipeline_fqn_compute(ctx->project_name, rel_path, "__file__");
-        node = cbm_gbuf_find_by_qn(ctx->gbuf, file_qn);
-        free(file_qn);
-    }
+    /* No fallback to __file__ — structurally-incorrect edges are
+     * worse than missing edges. */
     return node;
 }
 
