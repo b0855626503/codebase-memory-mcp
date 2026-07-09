@@ -141,10 +141,11 @@
     {
       "name": "cbm_clock_gettime",
       "file": "src/foundation/compat.c",
+      "note": "Linux: #define cbm_clock_gettime clock_gettime — tree-sitter sees clock_gettime",
       "expected_callees": [],
       "forbidden_callees": [],
       "min_callees": 0,
-      "min_callers": 15
+      "min_callers": 0
     },
     {
       "name": "elapsed_ms",
