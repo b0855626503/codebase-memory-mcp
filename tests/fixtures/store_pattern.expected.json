@@ -1,0 +1,28 @@
+{
+  "fixture": "store_pattern.c",
+  "functions": ["store_open", "store_close", "ht_get", "ht_set", "store_find", "store_insert", "do_work"],
+  "calls": [
+    ["do_work", "store_open"],
+    ["do_work", "store_insert"],
+    ["do_work", "store_find"],
+    ["do_work", "store_close"],
+    ["store_find", "ht_get"],
+    ["store_insert", "ht_set"]
+  ],
+  "queries": [
+    {
+      "id": "store_find_calls_ht_get",
+      "category": "call_graph",
+      "function": "store_find",
+      "expected_callees": ["ht_get"],
+      "forbidden_callees": ["ht_set", "store_open"]
+    },
+    {
+      "id": "do_work_impact",
+      "category": "impact",
+      "function": "do_work",
+      "transitive_callees": ["store_open", "store_insert", "ht_set", "store_find", "ht_get", "store_close"],
+      "min_transitive": 5
+    }
+  ]
+}

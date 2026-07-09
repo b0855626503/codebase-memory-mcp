@@ -1,0 +1,37 @@
+{
+  "fixture": "simple_call_chain.c",
+  "functions": ["main", "foo", "bar", "baz"],
+  "calls": [
+    ["main", "foo"],
+    ["foo", "bar"],
+    ["bar", "baz"]
+  ],
+  "edge_types": {
+    "CALLS": 3,
+    "DEFINES": 4,
+    "USAGE": 0
+  },
+  "queries": [
+    {
+      "id": "trace_main_callees",
+      "category": "call_graph",
+      "function": "main",
+      "expected_callees": ["foo"],
+      "forbidden_callees": ["bar", "baz"]
+    },
+    {
+      "id": "trace_foo_callers",
+      "category": "call_graph",
+      "function": "foo",
+      "expected_callers": ["main"],
+      "forbidden_callers": ["bar"]
+    },
+    {
+      "id": "transitive_chain",
+      "category": "call_graph",
+      "function": "main",
+      "transitive_callees": ["foo", "bar", "baz"],
+      "min_depth": 3
+    }
+  ]
+}

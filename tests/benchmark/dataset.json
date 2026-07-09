@@ -1,0 +1,96 @@
+{
+  "description": "Phase 3 — Retrieval Benchmark Dataset. Measures CBM retrieval quality independent of LLM.",
+  "version": "1.0",
+  "categories": ["call_graph", "definitions", "search", "architecture", "impact"],
+  "tests": [
+    {
+      "id": "calls_001",
+      "category": "call_graph",
+      "question": "cbm_pipeline_run เรียกฟังก์ชันอะไรบ้าง",
+      "function": "cbm_pipeline_run",
+      "expected_callees": ["cbm_discover_ex", "elapsed_ms", "try_incremental_or_delete_db"],
+      "forbidden_callees": ["printf", "main"],
+      "min_callees": 8
+    },
+    {
+      "id": "calls_002",
+      "category": "call_graph",
+      "question": "cbm_gbuf_insert_edge เรียกฟังก์ชันอะไรบ้าง",
+      "function": "cbm_gbuf_insert_edge",
+      "expected_callees": ["cbm_ht_get", "cbm_ht_set", "alloc_next_id"],
+      "min_callees": 5
+    },
+    {
+      "id": "calls_003",
+      "category": "call_graph",
+      "question": "cbm_extract_file เรียกฟังก์ชันอะไรบ้าง",
+      "function": "cbm_extract_file",
+      "expected_callees": ["cbm_extract_definitions", "cbm_extract_imports", "cbm_arena_init"],
+      "min_callees": 8
+    },
+    {
+      "id": "calls_004",
+      "category": "call_graph",
+      "question": "cbm_fqn_compute เรียกฟังก์ชันอะไรบ้าง",
+      "function": "cbm_fqn_compute",
+      "expected_callees": ["cbm_arena_alloc", "append_path_segments", "strip_ext_len"],
+      "min_callees": 3
+    },
+    {
+      "id": "impact_001",
+      "category": "call_graph",
+      "question": "cbm_store_close ถูกเรียกจากที่ไหนบ้าง",
+      "function": "cbm_store_close",
+      "min_callees": 0,
+      "min_callers": 30
+    },
+    {
+      "id": "impact_002",
+      "category": "call_graph",
+      "question": "cbm_arena_alloc ถูกเรียกแพร่หลายแค่ไหน",
+      "function": "cbm_arena_alloc",
+      "min_callees": 0,
+      "min_callers": 40
+    },
+    {
+      "id": "search_001",
+      "category": "search",
+      "question": "search_graph 'pipeline run' เจอ cbm_pipeline_run ไหม",
+      "query": "pipeline run",
+      "expected_names": ["cbm_pipeline_run", "run_parallel_pipeline", "run_sequential_pipeline"],
+      "min_results": 3
+    },
+    {
+      "id": "search_002",
+      "category": "search",
+      "question": "search_graph 'graph buffer insert' เจออะไรบ้าง",
+      "query": "graph buffer insert",
+      "expected_names": ["cbm_gbuf_insert_edge"],
+      "min_results": 1
+    },
+    {
+      "id": "search_003",
+      "category": "search",
+      "question": "search_graph 'store open' เจอ store_open ไหม",
+      "query": "store open",
+      "expected_names": ["cbm_store_open_path", "store_open"],
+      "min_results": 2
+    },
+    {
+      "id": "arch_001",
+      "category": "architecture",
+      "question": "layer ไหนใช้ graph_buffer มากที่สุด",
+      "target_package": "graph_buffer",
+      "expected_callers_from": ["pipeline", "store"],
+      "min_edges": 50
+    }
+  ],
+  "invariants": [
+    {
+      "id": "inv_calls_source",
+      "query": "MATCH (a:Module|File)-[r:CALLS]->(b) RETURN count(r) as cnt",
+      "max": 0,
+      "fail_message": "Module/File→Function CALLS found"
+    }
+  ]
+}
