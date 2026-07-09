@@ -1,0 +1,182 @@
+{
+  "description": "Phase 1C Layer 2 — Golden functions. Key functions with expected callees and minimum caller/callee counts.",
+  "functions": [
+    {
+      "name": "cbm_pipeline_run",
+      "file": "src/pipeline/pipeline.c",
+      "expected_callees": [
+        "cbm_discover_ex", "cbm_clock_gettime", "cbm_set_macro_extraction",
+        "cbm_userconfig_load", "elapsed_ms", "itoa_buf",
+        "try_incremental_or_delete_db", "check_cancel"
+      ],
+      "forbidden_callees": [],
+      "min_callees": 8,
+      "min_callers": 2
+    },
+    {
+      "name": "cbm_extract_file",
+      "file": "internal/cbm/cbm.c",
+      "expected_callees": [
+        "cbm_arena_init", "cbm_extract_definitions", "cbm_extract_imports",
+        "cbm_fqn_module", "cbm_lang_spec", "cbm_ts_language",
+        "get_thread_parser", "now_ns"
+      ],
+      "forbidden_callees": [],
+      "min_callees": 8,
+      "min_callers": 8
+    },
+    {
+      "name": "cbm_gbuf_insert_edge",
+      "file": "src/graph_buffer/graph_buffer.c",
+      "expected_callees": [
+        "alloc_next_id", "cbm_ht_get", "cbm_ht_set",
+        "gb_intern", "heap_strdup", "make_edge_key", "register_edge_in_indexes"
+      ],
+      "forbidden_callees": [],
+      "min_callees": 7,
+      "min_callers": 50
+    },
+    {
+      "name": "cbm_gbuf_find_by_qn",
+      "file": "src/graph_buffer/graph_buffer.c",
+      "expected_callees": ["cbm_ht_get"],
+      "forbidden_callees": [],
+      "min_callees": 1,
+      "min_callers": 40
+    },
+    {
+      "name": "cbm_fqn_compute",
+      "file": "internal/cbm/helpers.c",
+      "expected_callees": [
+        "append_path_segments", "cbm_arena_alloc", "strip_ext_len"
+      ],
+      "forbidden_callees": [],
+      "min_callees": 3,
+      "min_callers": 15
+    },
+    {
+      "name": "cbm_jsonrpc_parse",
+      "file": "src/mcp/mcp.c",
+      "expected_callees": ["heap_strdup"],
+      "forbidden_callees": [],
+      "min_callees": 1,
+      "min_callers": 1
+    },
+    {
+      "name": "cbm_discover_ex",
+      "file": "src/discover/discover.c",
+      "expected_callees": [
+        "cbm_gitignore_load", "cbm_gitignore_matches", "cbm_gitignore_free",
+        "walk_dir", "load_cbmignore_matchers", "free_cbmignore_matchers",
+        "wide_stat"
+      ],
+      "forbidden_callees": [],
+      "min_callees": 6,
+      "min_callers": 2
+    },
+    {
+      "name": "cbm_mcp_server_handle",
+      "file": "src/mcp/mcp.c",
+      "expected_callees": ["cbm_jsonrpc_parse"],
+      "forbidden_callees": [],
+      "min_callees": 1,
+      "min_callers": 1
+    },
+    {
+      "name": "cbm_pipeline_pass_calls",
+      "file": "src/pipeline/pass_calls.c",
+      "expected_callees": ["resolve_single_call", "cbm_pipeline_check_cancel", "cbm_free_result"],
+      "forbidden_callees": [],
+      "min_callees": 8,
+      "min_callers": 1
+    },
+    {
+      "name": "cbm_pipeline_pass_definitions",
+      "file": "src/pipeline/pass_definitions.c",
+      "expected_callees": ["cbm_extract_file"],
+      "forbidden_callees": [],
+      "min_callees": 3,
+      "min_callers": 1
+    },
+    {
+      "name": "cbm_store_open_path",
+      "file": "src/store/store.c",
+      "expected_callees": [],
+      "forbidden_callees": [],
+      "min_callees": 0,
+      "min_callers": 5
+    },
+    {
+      "name": "cbm_arena_alloc",
+      "file": "internal/cbm/arena.c",
+      "expected_callees": [],
+      "forbidden_callees": [],
+      "min_callees": 0,
+      "min_callers": 40
+    },
+    {
+      "name": "heap_strdup",
+      "file": "src/graph_buffer/graph_buffer.c",
+      "expected_callees": [],
+      "forbidden_callees": [],
+      "min_callees": 0,
+      "min_callers": 80
+    },
+    {
+      "name": "cbm_ht_get",
+      "file": "src/foundation/hash_table.c",
+      "expected_callees": [],
+      "forbidden_callees": [],
+      "min_callees": 0,
+      "min_callers": 50
+    },
+    {
+      "name": "cbm_store_search",
+      "file": "src/store/store.c",
+      "expected_callees": [],
+      "forbidden_callees": [],
+      "min_callees": 0,
+      "min_callers": 2
+    },
+    {
+      "name": "cbm_clock_gettime",
+      "file": "src/foundation/compat.c",
+      "expected_callees": [],
+      "forbidden_callees": [],
+      "min_callees": 0,
+      "min_callers": 15
+    },
+    {
+      "name": "elapsed_ms",
+      "file": "src/pipeline/pipeline.c",
+      "expected_callees": [],
+      "forbidden_callees": [],
+      "min_callees": 0,
+      "min_callers": 2
+    },
+    {
+      "name": "yy_doc_to_str",
+      "file": "src/foundation/yyjson.c",
+      "expected_callees": [],
+      "forbidden_callees": [],
+      "min_callees": 0,
+      "min_callers": 10
+    },
+    {
+      "name": "safe_str_free",
+      "file": "src/foundation/str.c",
+      "expected_callees": [],
+      "forbidden_callees": [],
+      "min_callees": 0,
+      "min_callers": 40
+    },
+    {
+      "name": "cbm_log_info",
+      "file": "src/foundation/log.c",
+      "expected_callees": [],
+      "forbidden_callees": [],
+      "min_callees": 0,
+      "min_callers": 0
+    }
+  ]
+}

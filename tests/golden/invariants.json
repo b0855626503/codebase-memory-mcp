@@ -1,0 +1,48 @@
+{
+  "description": "Phase 1C Layer 1 — Graph invariants. Hard-fail on structural violations.",
+  "invariants": [
+    {
+      "name": "CALLS.source.not.Module.or.File",
+      "query": "MATCH (a:Module|File)-[r:CALLS]->(b) WHERE NOT a.file_path CONTAINS 'test' AND NOT a.file_path CONTAINS 'golden' RETURN count(r) as violations",
+      "max": 0,
+      "fail_message": "Module/File→Function CALLS edges are forbidden — use a different edge type"
+    },
+    {
+      "name": "CALLS.source.not.Folder",
+      "query": "MATCH (a:Folder)-[r:CALLS]->(b) RETURN count(r) as violations",
+      "max": 0,
+      "fail_message": "Folder→Function CALLS edges are forbidden"
+    },
+    {
+      "name": "CALLS.target.not.File.Module.Folder",
+      "query": "MATCH (a)-[r:CALLS]->(b:File|Module|Folder) RETURN count(r) as violations",
+      "max": 0,
+      "fail_message": "CALLS→Module/File/Folder edges are forbidden"
+    },
+    {
+      "name": "USAGE.source.not.File.Module.Folder",
+      "query": "MATCH (a:File|Module|Folder)-[r:USAGE]->(b) RETURN count(r) as violations",
+      "max": 0,
+      "fail_message": "Module/File→target USAGE edges are forbidden"
+    },
+    {
+      "name": "WRITES.source.not.File.Module.Folder",
+      "query": "MATCH (a:File|Module|Folder)-[r:WRITES]->(b) RETURN count(r) as violations",
+      "max": 0,
+      "fail_message": "Module/File→target WRITES edges are forbidden"
+    },
+    {
+      "name": "THROWS.source.not.File.Module.Folder",
+      "query": "MATCH (a:File|Module|Folder)-[r:THROWS]->(b) RETURN count(r) as violations",
+      "max": 0,
+      "fail_message": "Module/File→target THROWS edges are forbidden"
+    },
+    {
+      "name": "RAISES.source.not.File.Module.Folder",
+      "query": "MATCH (a:File|Module|Folder)-[r:RAISES]->(b) RETURN count(r) as violations",
+      "max": 0,
+      "fail_message": "Module/File→target RAISES edges are forbidden"
+    }
+  ]
+}
+

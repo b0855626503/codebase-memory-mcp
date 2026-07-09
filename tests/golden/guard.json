@@ -1,0 +1,32 @@
+{
+  "description": "Phase 1C Layer 3 — Metrics guard. Minimum edge counts and search_graph quality checks.",
+  "metrics": [
+    {"name": "CALLS", "edge_type": "CALLS", "min": 8000, "fail_message": "CALLS coverage dropped below threshold"},
+    {"name": "USAGE", "edge_type": "USAGE", "min": 6000, "fail_message": "USAGE coverage dropped below threshold"},
+    {"name": "WRITES", "edge_type": "WRITES", "min": 1200, "fail_message": "WRITES coverage dropped below threshold"},
+    {"name": "IMPORTS", "edge_type": "IMPORTS", "min": 800, "fail_message": "IMPORTS coverage dropped below threshold"},
+    {"name": "DEFINES", "edge_type": "DEFINES", "min": 12000, "fail_message": "DEFINES coverage dropped below threshold"},
+    {"name": "SIMILAR_TO", "edge_type": "SIMILAR_TO", "min": 10000, "fail_message": "SIMILAR_TO coverage dropped below threshold"},
+    {"name": "Total nodes", "edge_type": "TOTAL_NODES", "min": 14000, "fail_message": "Node count dropped — possible extraction regression"}
+  ],
+  "search_queries": [
+    {
+      "name": "search_graph pipeline run",
+      "query": "pipeline run",
+      "expected": ["cbm_pipeline_run", "run_parallel_pipeline", "run_sequential_pipeline"],
+      "min_results": 3
+    },
+    {
+      "name": "search_graph store query",
+      "query": "store search",
+      "expected": ["cbm_store_search"],
+      "min_results": 1
+    },
+    {
+      "name": "search_graph graph buffer",
+      "query": "graph buffer insert",
+      "expected": ["cbm_gbuf_insert_edge"],
+      "min_results": 1
+    }
+  ]
+}
